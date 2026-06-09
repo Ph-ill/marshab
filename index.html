@@ -169,9 +169,10 @@
           <div class="field-label">Owner PIN</div>
           <input class="field-input" id="pinInput" inputmode="numeric" maxlength="8" placeholder="0000">
         </label>
-        <div class="auth-actions">
+        <div class="auth-actions" id="authActions">
           <button class="btn" id="btnOwnerLogin">Enter as owner</button>
           <button class="btn secondary" id="btnGuestLogin">Continue as guest</button>
+          <button class="btn" id="btnSetupOwner" style="display:none">Claim Hab & Setup PIN</button>
         </div>
         <div class="auth-note" id="authNote"></div>
       </div>
@@ -360,9 +361,17 @@ const MockServer = (() => {
     async call(path, body){
       switch(path){
         case '/api/hello':
-          return wait({ habId:HAB_ID, ownerName:save.owner.name, protocol:1, hasOwner:true });
+          return wait({ habId:HAB_ID, ownerName:save.owner.name, protocol:1, hasOwner:!!save.ownerPin });
         case '/api/login':
-          return wait(body.pin==='0000' ? { token:'owner-token', role:'owner' } : { error:'bad_pin' });
+          return wait(body.pin === (save.ownerPin || '0000') ? { token:'owner-token', role:'owner' } : { error:'bad_pin' });
+        case '/api/setup':
+          if(save.ownerPin) return wait({ error:'already_claimed' });
+          if(!body.pin || String(body.pin).length < 4) return wait({ error:'invalid_pin' });
+          save.ownerPin = body.pin;
+          save.owner.name = body.name || 'Crew';
+          save.owner.look = body.look || { skin:1, base:'frame_avatar_base' };
+          localStorage.setItem(LS, JSON.stringify(save));
+          return wait({ token:'owner-token', role:'owner', save });
         case '/api/passport': {
           const passport = body?.passport || guestPassport();
           visitorPassport = passport;
@@ -575,10 +584,33 @@ function renderGuestSetup(){
     if(btn) btn.disabled = lockedToOwner;
   }
 }
+function renderAuthMode(){
+  const isSetup = !habHasOwner;
+  document.getElementById('authHabLine').textContent = isSetup ? 'Unclaimed Hab module' : (window.__helloOwner || 'Crew') + "'s Hab · " + (window.__helloId || HAB_ID);
+  document.getElementById('btnOwnerLogin').style.display = isSetup ? 'none' : '';
+  document.getElementById('btnGuestLogin').style.display = isSetup ? 'none' : '';
+  document.getElementById('btnSetupOwner').style.display = isSetup ? '' : 'none';
+  document.getElementById('pinInput').placeholder = isSetup ? 'Set new PIN' : '0000';
+  document.querySelector('#pinInput').previousElementSibling.textContent = isSetup ? 'Setup PIN' : 'Owner PIN';
+  if(isSetup){
+    const panel = document.getElementById('guestSetupPanel');
+    const hint = document.getElementById('guestSetupHint');
+    const label = panel.querySelector('.title');
+    if(panel) panel.style.opacity = '1';
+    if(hint) hint.textContent = 'Configure the owner avatar for this hab';
+    if(label) label.textContent = 'Owner identity';
+    for(const id of ['btnGuestBasePrev','btnGuestBaseNext','btnGuestSkinPrev','btnGuestSkinNext','guestNameInput']){
+      const el = document.getElementById(id);
+      if(el) el.disabled = false;
+    }
+  } else {
+    renderGuestSetup();
+  }
+}
 function openAuth(){
   document.getElementById('authModal').classList.add('open');
   document.getElementById('authModal').setAttribute('aria-hidden','false');
-  renderGuestSetup();
+  renderAuthMode();
   document.getElementById('pinInput').focus();
 }
 function closeAuth(){
@@ -607,9 +639,10 @@ const audioDebug = { unlocked:false, last:'none', count:0 };
 window.__audioDebug = audioDebug;
 const giftDebug = { activePassportKey:null, lastReceipt:null, lastError:'', lastDuplicate:false };
 window.__giftDebug = giftDebug;
-const liveState = { connected:false, pollMs:0, roomCount:0, role:'visitor', lastToast:'', lastPresenceEvent:'', hydrated:false };
+let liveState = { connected:false, pollMs:0, roomCount:0, role:'visitor', lastToast:'', lastPresenceEvent:'', hydrated:false };
+let habHasOwner = true;
 window.__liveState = liveState;
-let miniGame = { running:false, startTs:0, marker:0, target:0.5, width:0.18, raf:0, lastReward:0, cooldownUntil:0, best:0, lastBand:'idle' };
+
 
 const me = { cell:{x:4,y:4}, px:0, py:0, path:[], targetCell:null, facing:0, speed:6 /*cells/sec*/ };
 const others = new Map();   // playerId -> { cell, px, py, tx, ty, facing, name, look, movingUntil }
@@ -791,17 +824,38 @@ async function reconcileOwnerPassport(passportOverride=null){
   return true;
 }
 async function enterOwner(pin){
+  if(!habHasOwner){ return await setupOwner(pin); }
   const res = await api('/api/login', { pin });
-  if(!res?.token){ setAuthNote('PIN REJECTED'); return false; }
+  if(!res?.token){ setAuthNote('PIN REJECTED'); chirp('bad'); return false; }
   const cachedPassport = readOwnerPassport();
   window._token = res.token;
   setRole('owner');
   const loaded = await loadOwnerSave();
-  if(!loaded){ setAuthNote('SAVE LOAD FAILED'); return false; }
+  if(!loaded){ setAuthNote('SAVE LOAD FAILED'); chirp('bad'); return false; }
   await reconcileOwnerPassport(cachedPassport);
   closeAuth();
   chirp('auth');
   toast('OWNER LINKED');
+  return true;
+}
+async function setupOwner(pin){
+  if(!pin || pin.length < 4){ setAuthNote('PIN MUST BE 4+ DIGITS'); chirp('bad'); return false; }
+  const gp = guestPassport();
+  const res = await api('/api/setup', { pin, name: gp.name, look: gp.look });
+  if(!res?.token){ setAuthNote('SETUP FAILED'); chirp('bad'); return false; }
+  window._token = res.token;
+  habHasOwner = true;
+  setRole('owner');
+  if(res.save){
+    applyOwnerSave(res.save);
+    await persistOwnerSave();
+  } else {
+    // offline fallback
+    await loadOwnerSave();
+  }
+  closeAuth();
+  chirp('auth');
+  toast('HAB CLAIMED');
   return true;
 }
 async function enterGuest(){
@@ -1538,6 +1592,13 @@ document.getElementById('btnOwnerLogin').onclick = async ()=>{
   try { await enterOwner(document.getElementById('pinInput').value.trim()); }
   finally { btn.disabled = false; }
 };
+document.getElementById('btnSetupOwner').onclick = async ()=>{
+  setAuthNote('');
+  const btn = document.getElementById('btnSetupOwner');
+  btn.disabled = true;
+  try { await enterOwner(document.getElementById('pinInput').value.trim()); }
+  finally { btn.disabled = false; }
+};
 document.getElementById('btnGuestLogin').onclick = async ()=>{
   setAuthNote('');
   const btn = document.getElementById('btnGuestLogin');
@@ -1641,8 +1702,11 @@ async function boot(){
   renderPresence();
   renderStatusHint();
   const hello = await api('/api/hello');
+  habHasOwner = !!hello.hasOwner;
+  window.__helloOwner = hello.ownerName;
+  window.__helloId = hello.habId;
   document.getElementById('habSub').textContent = 'module · ' + (hello.habId || HAB_ID);
-  document.getElementById('authHabLine').textContent = (hello.ownerName || 'Crew') + "'s Hab · " + (hello.habId || HAB_ID);
+  document.getElementById('authHabLine').textContent = habHasOwner ? ((hello.ownerName || 'Crew') + "'s Hab · " + (hello.habId || HAB_ID)) : 'Unclaimed Hab module';
   resize();
   const s = gridToScreen(me.cell.x, me.cell.y); me.px=s.x; me.py=s.y+TILE_H/2;
   if(!booted){
