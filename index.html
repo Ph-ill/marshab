@@ -706,6 +706,7 @@ async function reconcileOwnerPassport(passportOverride=null){
   ownerSave = rec.homeSave;
   writeStoredPassport(ownerPassportKey(), rec.passport);
   await persistOwnerSave();
+  chirp('gift');
   toast('GIFT LOG RECONCILED');
   return true;
 }
@@ -765,7 +766,7 @@ async function deliverCarriedGiftAt(cell){
   giftDebug.lastReceipt = res.receipt;
   giftDebug.lastDuplicate = !!res.duplicate;
   giftDebug.lastError = '';
-  chirp('ui');
+  chirp(res.duplicate ? 'ui' : 'gift');
   toast((res.duplicate ? 'REISSUED' : 'DELIVERED') + ' ' + (item?.name || carried.itemId).toUpperCase());
   return true;
 }
@@ -794,6 +795,7 @@ function chirp(type='ui'){
     auth:[520,0.08,'sine',0.03,780],
     start:[410,0.06,'square',0.03,620],
     reward:[780,0.14,'triangle',0.04,1120],
+    gift:[560,0.16,'sine',0.035,980],
     bad:[220,0.05,'sawtooth',0.025,180]
   }[type] || [640,0.03,'triangle',0.018,780];
   const [freq,dur,wave,gain,peak] = spec;
