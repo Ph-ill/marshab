@@ -1,0 +1,1546 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>MarsHab</title>
+<!--
+  MarsHab — SEED. A working isometric room with a walkable avatar, depth-sorted
+  rendering, BFS pathfinding, and a built-in MockServer fulfilling the ARCHITECTURE
+  server contract. Placeholder VECTOR art (no spritesheet yet) so it runs today.
+
+  RUN IT (module import needs http, not file://):
+      cd src && python3 -m http.server 8000   # then open http://localhost:8000/
+
+  This is a starting point. Search "AGENT:" for the extension points. Keep everything
+  offline and inline per docs/ARCHITECTURE.md. The build step later inlines gift.mjs
+  and minifies this into the single served file.
+-->
+<style>
+  :root{
+    /* Mars hab ops palette — regolith + amber CRT + cyan highlight */
+    --space:#0c0a09; --regolith:#3a2a22; --regolith-2:#4a342a;
+    --dust:#c08457; --amber:#ffb054; --amber-dim:#9c6a36;
+    --cyan:#5fd2d6; --ink:#f2e4d4; --muted:#9b8676; --line:#1c1512;
+  }
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent;}
+  html,body{margin:0;height:100%;overflow:hidden;background:var(--space);
+    font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace;color:var(--ink);}
+  #stage{position:fixed;inset:0;display:block;touch-action:none;
+    background:radial-gradient(120% 90% at 50% 18%, #1a120d 0%, #0c0a09 70%);}
+  /* CRT scanlines + vignette, pure CSS (no asset cost) */
+  #crt{position:fixed;inset:0;pointer-events:none;z-index:50;
+    background:repeating-linear-gradient(0deg, rgba(0,0,0,0) 0 2px, rgba(0,0,0,.10) 2px 3px);
+    box-shadow:inset 0 0 220px rgba(0,0,0,.65);mix-blend-mode:multiply;}
+  .hud{position:fixed;left:0;right:0;z-index:40;pointer-events:none;
+    display:flex;justify-content:space-between;align-items:flex-start;padding:14px 16px;}
+  .hud.bottom{bottom:0;top:auto;align-items:flex-end;}
+  .panel{pointer-events:auto;background:rgba(20,14,10,.82);border:1px solid var(--line);
+    border-radius:8px;padding:8px 12px;font-size:13px;letter-spacing:.5px;
+    box-shadow:0 6px 22px rgba(0,0,0,.5);backdrop-filter:blur(2px);}
+  .title{color:var(--amber);text-transform:uppercase;font-weight:700;}
+  .sub{color:var(--muted);font-size:11px;}
+  .credits b{color:var(--cyan);}
+  .btn{pointer-events:auto;cursor:pointer;background:var(--regolith);
+    border:1px solid var(--amber-dim);color:var(--ink);border-radius:8px;
+    padding:9px 14px;font:inherit;font-size:12px;letter-spacing:1px;text-transform:uppercase;}
+  .btn:active{transform:translateY(1px);}
+  .row{display:flex;gap:8px;}
+  #toast{position:fixed;left:50%;bottom:84px;transform:translateX(-50%) translateY(8px);
+    z-index:60;background:rgba(10,8,6,.92);border:1px solid var(--amber-dim);
+    color:var(--amber);padding:8px 14px;border-radius:8px;font-size:12px;letter-spacing:1px;
+    opacity:0;transition:opacity .25s, transform .25s;pointer-events:none;}
+  #toast.show{opacity:1;transform:translateX(-50%) translateY(0);}
+  .modal{position:fixed;inset:0;z-index:70;display:none;align-items:center;justify-content:center;
+    padding:18px;background:rgba(4,3,2,.62);backdrop-filter:blur(4px);}
+  .modal.open{display:flex;}
+  .modal-card{width:min(560px,100%);max-height:min(78vh,720px);overflow:hidden;
+    display:flex;flex-direction:column;background:rgba(20,14,10,.96);
+    border:1px solid var(--amber-dim);border-radius:14px;
+    box-shadow:0 18px 60px rgba(0,0,0,.55);padding:14px;}
+  .modal-head,.shop-item{display:flex;gap:12px;align-items:center;justify-content:space-between;}
+  .modal-head{margin-bottom:10px;position:relative;z-index:1;flex:0 0 auto;
+    background:rgba(20,14,10,.96);padding-bottom:8px;border-bottom:1px solid rgba(255,176,84,.12);}
+  .shop-list{display:flex;flex-direction:column;gap:8px;overflow:auto;min-height:0;padding-top:2px;}
+  .shop-item{padding:10px 12px;border:1px solid rgba(255,176,84,.12);border-radius:10px;
+    background:rgba(58,42,34,.35);align-items:flex-start;}
+  .shop-meta{display:flex;flex-direction:column;gap:4px;min-width:0;}
+  .shop-name{font-weight:700;color:var(--ink);}
+  .shop-tags{color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.8px;}
+  .shop-price{color:var(--cyan);font-weight:700;white-space:nowrap;}
+  .shop-actions{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end;}
+  .count-badge{display:inline-flex;align-items:center;justify-content:center;min-width:20px;height:20px;
+    padding:0 6px;border-radius:999px;background:rgba(95,210,214,.14);color:var(--cyan);font-size:11px;font-weight:700;}
+  .modal-tools{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px;}
+  .look-panel{display:flex;flex-direction:column;gap:10px;padding:12px;border:1px solid rgba(255,176,84,.12);
+    border-radius:10px;background:rgba(58,42,34,.28);margin-bottom:10px;}
+  .look-row{display:flex;gap:10px;align-items:center;justify-content:space-between;flex-wrap:wrap;}
+  .look-swatch{display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;border-radius:999px;
+    border:1px solid rgba(255,255,255,.15);box-shadow:0 0 0 1px rgba(0,0,0,.3) inset;}
+  .game-track{position:relative;height:24px;border-radius:999px;overflow:hidden;background:rgba(12,10,9,.92);border:1px solid rgba(255,176,84,.18);}
+  .game-zone,.game-marker{position:absolute;top:3px;bottom:3px;border-radius:999px;}
+  .game-zone{background:rgba(95,210,214,.22);border:1px solid rgba(95,210,214,.6);}
+  .game-marker{width:10px;background:var(--amber);box-shadow:0 0 12px rgba(255,176,84,.35);}
+  .form-stack{display:flex;flex-direction:column;gap:10px;}
+  .field-label{color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.9px;}
+  .field-input{width:100%;background:rgba(12,10,9,.92);border:1px solid rgba(255,176,84,.2);color:var(--ink);
+    border-radius:8px;padding:11px 12px;font:inherit;font-size:16px;letter-spacing:2px;}
+  .field-input::placeholder{color:rgba(155,134,118,.8);letter-spacing:1px;}
+  .auth-actions{display:flex;gap:8px;flex-wrap:wrap;}
+  .auth-note{min-height:16px;color:var(--amber);font-size:11px;letter-spacing:.8px;}
+  .btn.secondary{background:transparent;border-color:rgba(255,176,84,.24);}
+  .btn:disabled{opacity:.45;cursor:not-allowed;}
+  .presence{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:4px;}
+  .presence-chip{display:inline-flex;align-items:center;gap:6px;padding:2px 8px;border-radius:999px;
+    border:1px solid rgba(255,176,84,.14);background:rgba(12,10,9,.55);font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.8px;}
+  .presence-dot{width:7px;height:7px;border-radius:999px;background:var(--amber-dim);box-shadow:0 0 10px rgba(255,176,84,.18);}
+  .presence-chip.live .presence-dot{background:var(--cyan);box-shadow:0 0 12px rgba(95,210,214,.35);}
+  .presence-chip.warn .presence-dot{background:#ff8a5f;box-shadow:0 0 12px rgba(255,138,95,.32);}
+</style>
+</head>
+<body>
+  <canvas id="stage"></canvas>
+  <div id="crt"></div>
+
+  <div class="hud">
+    <div class="panel">
+      <div class="title" id="habName">MARS HAB</div>
+      <div class="sub" id="habSub">module · sol 0</div>
+      <div class="presence" id="presenceBar">
+        <div class="presence-chip" id="presenceLink"><span class="presence-dot"></span><span id="presenceLinkText">link idle</span></div>
+        <div class="presence-chip live" id="presenceRoom"><span class="presence-dot"></span><span id="presenceRoomText">room 0/4</span></div>
+        <div class="presence-chip" id="presenceRole"><span class="presence-dot"></span><span id="presenceRoleText">guest shell</span></div>
+      </div>
+    </div>
+    <div class="panel credits">CR <b id="credits">0</b></div>
+  </div>
+  <div class="hud bottom">
+    <div class="sub panel" id="statusHint" style="font-size:11px">tap a tile to walk</div>
+    <div class="row">
+      <button class="btn" id="btnGame">Play</button>
+      <button class="btn" id="btnShop">Shop</button>
+      <button class="btn" id="btnBuild">Build</button>
+      <button class="btn" id="btnWardrobe">Wardrobe</button>
+    </div>
+  </div>
+  <div class="modal" id="authModal" aria-hidden="true">
+    <div class="modal-card" style="width:min(420px,100%)">
+      <div class="modal-head">
+        <div>
+          <div class="title">Hab Link</div>
+          <div class="sub" id="authHabLine">Connect to this hab</div>
+        </div>
+      </div>
+      <div class="form-stack">
+        <div class="sub">Owner login pulls the same hab save from any device. Guests can walk the room but cannot edit the hab.</div>
+        <label>
+          <div class="field-label">Owner PIN</div>
+          <input class="field-input" id="pinInput" inputmode="numeric" maxlength="8" placeholder="0000">
+        </label>
+        <div class="auth-actions">
+          <button class="btn" id="btnOwnerLogin">Enter as owner</button>
+          <button class="btn secondary" id="btnGuestLogin">Continue as guest</button>
+        </div>
+        <div class="auth-note" id="authNote"></div>
+      </div>
+    </div>
+  </div>
+  <div id="toast"></div>
+  <div class="modal" id="shopModal" aria-hidden="true">
+    <div class="modal-card">
+      <div class="modal-head">
+        <div>
+          <div class="title">Outpost Exchange</div>
+          <div class="sub">Owner shop · furniture and wardrobe basics</div>
+        </div>
+        <button class="btn secondary" id="btnCloseShop">Close</button>
+      </div>
+      <div class="shop-list" id="shopList"></div>
+    </div>
+  </div>
+  <div class="modal" id="buildModal" aria-hidden="true">
+    <div class="modal-card">
+      <div class="modal-head">
+        <div>
+          <div class="title">Hab Builder</div>
+          <div class="sub">Select furniture from inventory, then tap a tile</div>
+        </div>
+        <button class="btn secondary" id="btnCloseBuild">Close</button>
+      </div>
+      <div class="modal-tools">
+        <button class="btn secondary" id="btnBuildPickup">Pick up from room</button>
+      </div>
+      <div class="shop-list" id="buildList"></div>
+    </div>
+  </div>
+  <div class="modal" id="gameModal" aria-hidden="true">
+    <div class="modal-card" style="width:min(460px,100%)">
+      <div class="modal-head">
+        <div>
+          <div class="title">Solar Array Align</div>
+          <div class="sub">Tap start, then lock in while the cursor crosses the cyan band</div>
+        </div>
+        <button class="btn secondary" id="btnCloseGame">Close</button>
+      </div>
+      <div class="look-panel">
+        <div class="shop-meta">
+          <div class="shop-name" id="gameLabel">Ready for a new calibration run</div>
+          <div class="shop-tags" id="gameHint">Best hits pay more credits. Rewards are tiny and replayable.</div>
+        </div>
+        <div class="game-track"><div class="game-zone" id="gameZone"></div><div class="game-marker" id="gameMarker"></div></div>
+        <div class="look-row" style="justify-content:flex-start">
+          <div class="shop-tags" id="gameScore">target idle · reward bands +18 / +12 / +7 / +4</div>
+        </div>
+        <div class="shop-actions">
+          <button class="btn secondary" id="btnGameStart">Start Run</button>
+          <button class="btn" id="btnGameLock">Lock In</button>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="modal" id="wardrobeModal" aria-hidden="true">
+    <div class="modal-card">
+      <div class="modal-head">
+        <div>
+          <div class="title">Wardrobe Locker</div>
+          <div class="sub">Equip what visitors will see when you travel</div>
+        </div>
+        <button class="btn secondary" id="btnCloseWardrobe">Close</button>
+      </div>
+      <div class="look-panel" id="lookPanel"></div>
+      <div class="shop-list" id="wardrobeList"></div>
+    </div>
+  </div>
+  <div id="toast"></div>
+
+<script type="module">
+import { buyGift, deliverGift, applyDeliveryToPassport, reconcile, mintPassport, makeNonce }
+  from './gift.mjs';   // AGENT: wire these in for the gift UI (Milestone 6). Loaded now so it's ready.
+
+// ============================================================================
+// CONFIG
+// ============================================================================
+const USE_MOCK = true;   // AGENT: flip to false to talk to a real Pico over fetch().
+const HAB_ID   = 'hab_demo';
+
+// AGENT: this catalog is the SHARED, baked-in item table (see docs/DATA_SCHEMAS.md).
+// Expand it; every hab must ship the identical catalog so carried gifts render anywhere.
+const CATALOG = { v:1, items:{
+  rug_regolith:     { kind:'furniture', name:'Regolith Rug',      price:40,  footprint:[1,1], frame:'rug_regolith', color:'#5a3c2e' },
+  lamp_raptor:      { kind:'furniture', name:'Raptor Lamp',       price:120, footprint:[1,1], frame:'lamp_raptor', color:'#b5532a', emits:'light' },
+  desk_starship:    { kind:'furniture', name:'Starship Desk',     price:260, footprint:[2,1], frame:'desk_starship', color:'#8a8f97' },
+  suit_eva_white:   { kind:'clothing',  name:'EVA Suit (White)',  price:80,  slot:'body', frame:'suit_eva_white', color:'#d8d8d0' },
+  helmet_std:       { kind:'clothing',  name:'Helmet',            price:60,  slot:'head', frame:'helmet_std', color:'#b9c3d0' },
+  patch_ace:        { kind:'clothing',  name:'ACE Mission Patch', price:30,  slot:'patch', frame:'patch_ace', color:'#d96e3a' },
+  plant_earth:      { kind:'furniture', name:'Earth Plant',       price:150, footprint:[1,1], frame:'plant_earth', color:'#3f7d4f', giftOnly:true },
+  fig_rover:        { kind:'furniture', name:'Rover Figurine',    price:90,  footprint:[1,1], frame:'fig_rover', color:'#8f6d4f', giftOnly:true },
+  plaque_firstcrew: { kind:'clothing',  name:'First Crew Pin',    price:200, slot:'patch', frame:'plaque_firstcrew', color:'#e0b96c', giftOnly:true },
+}};
+const BASE_LOOKS = [
+  ['frame_avatar_base', 'Dust Suit', '#d98b3f'],
+  ['frame_avatar_amber', 'Amber Ops', '#c77739'],
+  ['frame_avatar_cyan', 'Cyan Ops', '#6f8fb5'],
+  ['frame_avatar_olive', 'Hydro Green', '#6b8a63'],
+];
+const SKIN_TONES = ['#d7aa84','#b57b52','#8b5b3c','#6e4730'];
+
+// ============================================================================
+// ISO MATH  (2:1 diamond tiles)
+// ============================================================================
+const BASE_TILE_W = 64, BASE_TILE_H = 32;
+let TILE_W = BASE_TILE_W, TILE_H = BASE_TILE_H;
+let originX = 0, originY = 0;     // screen px of grid cell (0,0), recomputed on resize
+function gridToScreen(gx, gy){
+  return { x: originX + (gx - gy) * (TILE_W/2), y: originY + (gx + gy) * (TILE_H/2) };
+}
+function screenToGrid(sx, sy){
+  const a = (sx - originX) / (TILE_W/2);
+  const b = (sy - originY) / (TILE_H/2);
+  return { x: Math.floor((a + b) / 2), y: Math.floor((b - a) / 2) };
+}
+
+// ============================================================================
+// PATHFINDING  (BFS on the small room grid — uniform cost, plenty for ~8x8)
+// ============================================================================
+function bfs(start, goal, size, blocked){
+  const key = (x,y)=>x+','+y;
+  const inB = (x,y)=>x>=0&&y>=0&&x<size[0]&&y<size[1];
+  if(!inB(goal.x,goal.y) || blocked.has(key(goal.x,goal.y))) return null;
+  const q=[start], came={[key(start.x,start.y)]:null}, dirs=[[1,0],[-1,0],[0,1],[0,-1]];
+  while(q.length){
+    const c=q.shift();
+    if(c.x===goal.x && c.y===goal.y){
+      const path=[]; let k=key(c.x,c.y);
+      while(k){ const [x,y]=k.split(',').map(Number); path.unshift({x,y}); k=came[k]; }
+      return path;
+    }
+    for(const [dx,dy] of dirs){
+      const nx=c.x+dx, ny=c.y+dy, nk=key(nx,ny);
+      if(inB(nx,ny) && !(nk in came) && !blocked.has(nk)){ came[nk]=key(c.x,c.y); q.push({x:nx,y:ny}); }
+    }
+  }
+  return null;
+}
+
+// ============================================================================
+// MOCK SERVER  (implements the ARCHITECTURE contract in-browser, localStorage-backed)
+// AGENT: keep this behavior-compatible with the real Pico endpoints.
+// ============================================================================
+const MockServer = (() => {
+  const LS = 'marshab.save.' + HAB_ID;
+  function load(){
+    try { const s = JSON.parse(localStorage.getItem(LS)); if(s) return s; } catch{}
+    return { v:1, habId:HAB_ID, passportId:'ppt_demo',
+      owner:{ name:'Crew', look:{skin:1} }, credits:320,
+      room:{ size:[8,8], placed:[ {uid:'p1',itemId:'desk_starship',cell:[5,2],rot:0},
+                                   {uid:'p2',itemId:'rug_regolith', cell:[3,4],rot:0} ] },
+      inventory:[], wardrobe:[], equipped:{}, carriedGift:null,
+      giftsReceived:[], deliveredReceipts:[] };
+  }
+  const LEDGER_LS = 'marshab.giftLedger.' + HAB_ID;
+  const loadLedger = ()=>{
+    try { return JSON.parse(localStorage.getItem(LEDGER_LS)) || {}; }
+    catch { return {}; }
+  };
+  let save = load();
+  let ledger = loadLedger();
+  let visitorPassport = null;
+  window.__mockGhost = window.__mockGhost || { hidden:false };
+  // a wandering "ghost" visitor so multiplayer rendering is testable with no hardware
+  const ghost = { playerId:'ghost', name:'Ghost', look:{skin:3}, equipped:{}, cell:{x:1,y:6}, facing:1, _t:0 };
+  function stepGhost(){
+    ghost._t++;
+    if(ghost._t%90===0){
+      const next = { x:1+(Math.random()*6|0), y:1+(Math.random()*6|0) };
+      ghost.facing = (next.x - ghost.cell.x + next.y - ghost.cell.y) >= 0 ? 1 : 0;
+      ghost.cell = next;
+    }
+  }
+  setInterval(stepGhost, 200);
+
+  const me = { playerId:'you', name:save.owner.name, look:save.owner.look, equipped:save.equipped, cell:{x:4,y:4}, facing:0 };
+  const wait = (v)=>new Promise(r=>setTimeout(()=>r(v), 8));
+  const role = ()=>window._token === 'owner-token' ? 'owner' : (window._token ? 'visitor' : null);
+  const syncOwnerAvatar = ()=>{ me.name = save.owner.name; me.look = save.owner.look; me.equipped = save.equipped; };
+  syncOwnerAvatar();
+
+  return {
+    async call(path, body){
+      switch(path){
+        case '/api/hello':
+          return wait({ habId:HAB_ID, ownerName:save.owner.name, protocol:1, hasOwner:true });
+        case '/api/login':
+          return wait(body.pin==='0000' ? { token:'owner-token', role:'owner' } : { error:'bad_pin' });
+        case '/api/passport': {
+          const passport = body?.passport || guestPassport();
+          visitorPassport = passport;
+          me.name = passport.name || 'Guest';
+          me.look = passport.look || { skin:2 };
+          me.equipped = passport.equipped || {};
+          return wait({ token:'visitor-token', role:'visitor', playerId:'you' });
+        }
+        case '/api/state': {
+          const youRole = role() || 'visitor';
+          if(youRole==='owner') syncOwnerAvatar();
+          return wait({
+            room:{ layout:save.room.placed, meta:{ habId:HAB_ID, ownerName:save.owner.name }, size:save.room.size },
+            players:[ me, ...(window.__mockGhost?.hidden ? [] : [ghost]) ],
+            gifts:(save.giftsReceived||[]).map(g=>({ id:g.uid, cell:g.cell, fromName:g.fromName, itemId:g.itemId })),
+            you: youRole==='owner' ? { playerId:'you', role:'owner', credits:save.credits } : { playerId:'you', role:'visitor' },
+          });
+        }
+        case '/api/move':
+          me.cell = body.cell; me.facing = body.facing; return wait({ ok:true });
+        case '/api/save':
+          if(role()!=='owner') return wait({ error:'forbidden' });
+          if(body && body.save){
+            const next = { ...body.save };
+            if(typeof next.credits === 'number' && typeof save.credits === 'number' && next.credits > save.credits + 25) next.credits = save.credits + 25;
+            save = next;
+            localStorage.setItem(LS, JSON.stringify(save));
+            syncOwnerAvatar();
+          }
+          return wait({ ok:true, save });
+        case '/api/gift/deliver': {
+          if(role()!=='visitor') return wait({ error:'forbidden' });
+          const passport = visitorPassport || guestPassport();
+          const cell = body?.cell;
+          if(!Array.isArray(cell) || cell.length!==2) return wait({ error:'bad_cell' });
+          const res = deliverGift(save, ledger, passport, cell, Date.now(), { hostHabId:HAB_ID });
+          if(res.error) return wait({ error:res.error });
+          save = res.hostSave;
+          ledger = res.deliveryLedger;
+          localStorage.setItem(LS, JSON.stringify(save));
+          localStorage.setItem(LEDGER_LS, JSON.stringify(ledger));
+          return wait({ receipt:res.receipt, duplicate:!!res.duplicate });
+        }
+        default: return wait({ error:'unknown_endpoint' });
+      }
+    },
+    _save(){ return save; },
+  };
+})();
+
+async function api(path, body){
+  if(USE_MOCK) return MockServer.call(path, body);
+  const res = await fetch(path, { method: body?'POST':'GET',
+    headers:{'Content-Type':'application/json', 'Authorization':'Bearer '+(window._token||'')},
+    body: body?JSON.stringify(body):undefined });
+  return res.json();
+}
+function authRole(){
+  return window._token === 'owner-token' ? 'owner' : (window._token ? 'visitor' : null);
+}
+function guestPassportKey(){
+  return 'marshab.guestPassport';
+}
+function guestPassport(){
+  const key = guestPassportKey();
+  try {
+    const cached = JSON.parse(localStorage.getItem(key));
+    if(cached?.passportId) return cached;
+  } catch{}
+  const nonce = Math.random().toString(36).slice(2,8);
+  const passport = {
+    v:1,
+    passportId:'guest_' + nonce,
+    name:'Guest-' + nonce.slice(0,3).toUpperCase(),
+    look:{ skin:2, base:'frame_avatar_base' },
+    equipped:{},
+    carriedGift:null,
+    issuedBy:'guest_local',
+    issuedTs:Date.now()
+  };
+  localStorage.setItem(key, JSON.stringify(passport));
+  return passport;
+}
+function ownerPassportKey(){
+  return 'marshab.passport.' + HAB_ID;
+}
+function writeStoredPassport(key, passport){
+  localStorage.setItem(key, JSON.stringify(passport));
+  giftDebug.activePassportKey = key;
+  renderStatusHint();
+}
+function readOwnerPassport(){
+  try { return JSON.parse(localStorage.getItem(ownerPassportKey())); }
+  catch { return null; }
+}
+function passportStorageKey(passport){
+  const ownerPassport = readOwnerPassport();
+  return ownerPassport?.passportId && ownerPassport.passportId === passport?.passportId
+    ? ownerPassportKey()
+    : guestPassportKey();
+}
+function currentTravelPassport(){
+  return readActiveTravelPassport() || passportForTravel();
+}
+function travelHint(){
+  const passport = currentTravelPassport();
+  const carried = passport?.carriedGift;
+  if(currentRole==='visitor' && carried){
+    const item = CATALOG.items[carried.itemId];
+    return `carrying ${item?.name || carried.itemId} for ${carried.forName || 'someone'} · tap empty tile to place`;
+  }
+  if(passport?.pendingReceipts?.length){
+    const receipt = passport.pendingReceipts[0];
+    const item = CATALOG.items[receipt.itemId];
+    return `delivery logged for ${item?.name || receipt.itemId} · return home as owner to reconcile`;
+  }
+  if(currentRole==='owner' && ownerSave?.carriedGift){
+    const carriedItem = CATALOG.items[ownerSave.carriedGift.itemId];
+    return `courier slot loaded: ${carriedItem?.name || ownerSave.carriedGift.itemId} for ${ownerSave.carriedGift.forName || 'someone'}`;
+  }
+  return 'tap a tile to walk';
+}
+function renderStatusHint(){
+  const el = document.getElementById('statusHint');
+  if(el) el.textContent = travelHint();
+}
+function normalizeOwnerSave(save){
+  const stablePassportId = save?.passportId || makeNonce('ppt');
+  return {
+    v:1,
+    inventory:[], wardrobe:[], equipped:{}, carriedGift:null, giftsReceived:[], deliveredReceipts:[],
+    ...save,
+    passportId: stablePassportId,
+    owner:{ name:'Crew', look:{ skin:1, base:'frame_avatar_base' }, ...(save?.owner || {}), look:{ skin:1, base:'frame_avatar_base', ...(save?.owner?.look || {}) } },
+    room:{ size:[8,8], placed:[], ...(save?.room || {}), placed:[...(save?.room?.placed || [])] },
+    inventory:[...(save?.inventory || [])],
+    wardrobe:[...(save?.wardrobe || [])],
+    equipped:{ ...(save?.equipped || {}) },
+    giftsReceived:[...(save?.giftsReceived || [])],
+    deliveredReceipts:[...(save?.deliveredReceipts || [])],
+  };
+}
+function refreshOwnerPassport(){
+  if(!ownerSave) return null;
+  const passport = mintPassport(ownerSave, HAB_ID, Date.now(), { passportId: ownerSave.passportId });
+  writeStoredPassport(ownerPassportKey(), passport);
+  renderStatusHint();
+  return passport;
+}
+function passportForTravel(){
+  const cached = readOwnerPassport();
+  if(cached?.passportId) return cached;
+  return guestPassport();
+}
+function readActiveTravelPassport(){
+  if(!giftDebug.activePassportKey) return null;
+  try { return JSON.parse(localStorage.getItem(giftDebug.activePassportKey)); }
+  catch { return null; }
+}
+function setOwnerControls(enabled){
+  for(const id of ['btnGame','btnShop','btnBuild','btnWardrobe']) document.getElementById(id).disabled = !enabled;
+}
+function setAuthNote(msg=''){
+  document.getElementById('authNote').textContent = msg;
+}
+function openAuth(){
+  document.getElementById('authModal').classList.add('open');
+  document.getElementById('authModal').setAttribute('aria-hidden','false');
+  document.getElementById('pinInput').focus();
+}
+function closeAuth(){
+  document.getElementById('authModal').classList.remove('open');
+  document.getElementById('authModal').setAttribute('aria-hidden','true');
+}
+
+// ============================================================================
+// CLIENT STATE + RENDER
+// ============================================================================
+const canvas = document.getElementById('stage');
+const ctx = canvas.getContext('2d');
+let DPR = 1, W = 0, H = 0;
+let world = { room:{ size:[8,8], layout:[] }, players:[], gifts:[], you:{credits:0} };
+let ownerSave = null;
+let currentRole = null;
+let booted = false;
+let shopOpen = false;
+let buildOpen = false;
+let gameOpen = false;
+let wardrobeOpen = false;
+let buildMode = { itemId:null, rot:0, pickup:false };
+let hoverCell = null;
+let audioCtx = null;
+const audioDebug = { unlocked:false, last:'none', count:0 };
+window.__audioDebug = audioDebug;
+const giftDebug = { activePassportKey:null, lastReceipt:null, lastError:'', lastDuplicate:false };
+window.__giftDebug = giftDebug;
+const liveState = { connected:false, pollMs:0, roomCount:0, role:'visitor', lastToast:'', lastPresenceEvent:'', hydrated:false };
+window.__liveState = liveState;
+let miniGame = { running:false, startTs:0, marker:0, target:0.5, width:0.18, raf:0, lastReward:0, cooldownUntil:0, best:0, lastBand:'idle' };
+
+const me = { cell:{x:4,y:4}, px:0, py:0, path:[], targetCell:null, facing:0, speed:6 /*cells/sec*/ };
+const others = new Map();   // playerId -> { cell, px, py, tx, ty, facing, name, look, movingUntil }
+
+function resize(){
+  DPR = Math.min(window.devicePixelRatio||1, 2);
+  W = window.innerWidth; H = window.innerHeight;
+  canvas.style.width = W + 'px';
+  canvas.style.height = H + 'px';
+  canvas.width = W*DPR; canvas.height = H*DPR; ctx.setTransform(DPR,0,0,DPR,0,0);
+
+  const [sx,sy] = world.room.size;
+  const portrait = H > W;
+  const availW = W - (portrait ? 28 : 120);
+  const availH = H - (portrait ? 220 : 150);
+  const baseFloorW = (sx + sy) * (BASE_TILE_W / 2);
+  const baseFloorH = (sx + sy - 1) * (BASE_TILE_H / 2) + BASE_TILE_H;
+  const scale = Math.max(0.68, Math.min(1, availW / baseFloorW, availH / baseFloorH));
+  TILE_W = Math.round(BASE_TILE_W * scale);
+  TILE_H = Math.round(BASE_TILE_H * scale);
+
+  const wallDrop = TILE_H * 2.7;
+  const roomHeight = wallDrop + ((sx + sy - 1) * (TILE_H / 2) + TILE_H);
+  const topInset = portrait ? 96 : 64;
+  const bottomInset = portrait ? 122 : 78;
+  const safeHeight = Math.max(80, H - topInset - bottomInset);
+
+  originX = W / 2;
+  originY = topInset + wallDrop + Math.max(0, (safeHeight - roomHeight) / 2);
+
+  const selfPos = gridToScreen(me.cell.x, me.cell.y);
+  me.px = selfPos.x; me.py = selfPos.y + TILE_H/2;
+  for(const [,o] of others){
+    const p = gridToScreen(o.cell.x, o.cell.y);
+    o.px = p.x; o.py = p.y + TILE_H/2;
+    o.tx = o.px; o.ty = o.py;
+  }
+}
+window.addEventListener('resize', resize);
+
+function itemFootprint(item, rot=0){
+  const fp = item?.footprint || [1,1];
+  return rot % 2 ? [fp[1], fp[0]] : fp;
+}
+function cellsForPlacement(item, cell, rot=0){
+  const [w,h] = itemFootprint(item, rot);
+  const cells = [];
+  for(let dx=0; dx<w; dx++) for(let dy=0; dy<h; dy++) cells.push([cell[0]+dx, cell[1]+dy]);
+  return cells;
+}
+function placedCells(entry){
+  const item = CATALOG.items[entry.itemId];
+  return cellsForPlacement(item, entry.cell, entry.rot||0);
+}
+function occupiedMap(ignoreUid=null){
+  const map = new Map();
+  for(const it of world.room.layout){
+    for(const [x,y] of placedCells(it)){
+      const key = x+','+y;
+      if(ignoreUid && it.uid===ignoreUid) continue;
+      map.set(key, it);
+    }
+  }
+  return map;
+}
+function findPlacedAt(cell){
+  return occupiedMap().get(cell[0]+','+cell[1]) || null;
+}
+function canPlaceItem(itemId, cell, rot=0, ignoreUid=null){
+  const item = CATALOG.items[itemId];
+  if(!item) return false;
+  const [sx,sy] = world.room.size;
+  const taken = occupiedMap(ignoreUid);
+  for(const [x,y] of cellsForPlacement(item, cell, rot)){
+    if(x<0 || y<0 || x>=sx || y>=sy) return false;
+    if(taken.has(x+','+y)) return false;
+  }
+  return true;
+}
+function blockedSet(){
+  return new Set(occupiedMap().keys());
+}
+function inventoryCounts(){
+  const counts = new Map();
+  for(const itemId of (ownerSave?.inventory || [])) counts.set(itemId, (counts.get(itemId)||0)+1);
+  return [...counts.entries()];
+}
+function byKind(kind){
+  return Object.entries(CATALOG.items).filter(([,item]) => item.kind===kind);
+}
+function syncCredits(){
+  const credits = ownerSave?.credits ?? world.you.credits ?? 0;
+  world.you.credits = credits;
+  document.getElementById('credits').textContent = credits;
+}
+function renderPresence(){
+  const link = document.getElementById('presenceLink');
+  const room = document.getElementById('presenceRoom');
+  const role = document.getElementById('presenceRole');
+  document.getElementById('presenceLinkText').textContent = liveState.connected
+    ? `link live · ${Math.max(8, Math.round(liveState.pollMs||0))} ms`
+    : 'link waiting';
+  document.getElementById('presenceRoomText').textContent = `room ${liveState.roomCount}/4`;
+  document.getElementById('presenceRoleText').textContent = liveState.role==='owner'
+    ? 'owner shell'
+    : (liveState.role==='visitor' ? 'visitor shell' : 'link idle');
+  link.className = 'presence-chip ' + (liveState.connected ? 'live' : 'warn');
+  room.className = 'presence-chip ' + (liveState.roomCount > 1 ? 'live' : '');
+  role.className = 'presence-chip ' + (liveState.role==='owner' ? 'live' : '');
+}
+function announcePresence(seen, currentIds){
+  if(!currentRole) return;
+  const joined = [];
+  const left = [];
+  for(const id of currentIds) if(!seen.has(id)) joined.push(id);
+  for(const id of seen) if(!currentIds.has(id)) left.push(id);
+  if(!liveState.hydrated){
+    liveState.hydrated = true;
+    return;
+  }
+  if(joined.length){
+    const name = others.get(joined[0])?.name || 'VISITOR';
+    liveState.lastPresenceEvent = `join:${joined[0]}`;
+    toast(name.toUpperCase() + ' DOCKED');
+    chirp('ui');
+    return;
+  }
+  if(left.length){
+    liveState.lastPresenceEvent = `left:${left[0]}`;
+    toast('VISITOR DEPARTED');
+    return;
+  }
+}
+function setRole(role){
+  currentRole = role;
+  liveState.role = role || 'guest';
+  liveState.hydrated = false;
+  liveState.lastPresenceEvent = '';
+  setOwnerControls(role==='owner');
+  if(role!=='owner'){
+    ownerSave = null;
+    world.you = { ...(world.you||{}), role:'visitor', credits:0 };
+    closeShop();
+    closeBuild();
+    closeGame();
+    closeWardrobe();
+    resetBuildMode();
+  }
+  syncCredits();
+  renderPresence();
+  renderStatusHint();
+}
+function applyOwnerSave(save){
+  ownerSave = normalizeOwnerSave(save);
+  world.room.layout = ownerSave.room?.placed || [];
+  world.room.size = ownerSave.room?.size || world.room.size;
+  refreshOwnerPassport();
+  syncCredits();
+  renderStatusHint();
+  if(shopOpen) renderShop();
+  if(buildOpen) renderBuild();
+  if(wardrobeOpen) renderWardrobe();
+}
+async function loadOwnerSave(){
+  const res = await api('/api/save');
+  if(res?.save){ applyOwnerSave(res.save); return true; }
+  return false;
+}
+async function reconcileOwnerPassport(passportOverride=null){
+  if(!ownerSave) return false;
+  const cached = passportOverride || readOwnerPassport();
+  if(!cached?.pendingReceipts?.length) return false;
+  const rec = reconcile(ownerSave, cached);
+  ownerSave = rec.homeSave;
+  writeStoredPassport(ownerPassportKey(), rec.passport);
+  await persistOwnerSave();
+  toast('GIFT LOG RECONCILED');
+  return true;
+}
+async function enterOwner(pin){
+  const res = await api('/api/login', { pin });
+  if(!res?.token){ setAuthNote('PIN REJECTED'); return false; }
+  const cachedPassport = readOwnerPassport();
+  window._token = res.token;
+  setRole('owner');
+  const loaded = await loadOwnerSave();
+  if(!loaded){ setAuthNote('SAVE LOAD FAILED'); return false; }
+  await reconcileOwnerPassport(cachedPassport);
+  closeAuth();
+  chirp('auth');
+  toast('OWNER LINKED');
+  return true;
+}
+async function enterGuest(){
+  const passport = passportForTravel();
+  giftDebug.activePassportKey = passportStorageKey(passport);
+  const res = await api('/api/passport', { passport });
+  if(!res?.token){ setAuthNote('GUEST ENTRY FAILED'); return false; }
+  window._token = res.token;
+  setRole('visitor');
+  closeAuth();
+  chirp('ui');
+  toast(passport?.carriedGift ? 'CARRYING GIFT · TAP TILE TO PLACE' : 'GUEST MODE');
+  return true;
+}
+async function deliverCarriedGiftAt(cell){
+  const passport = readActiveTravelPassport() || passportForTravel();
+  const carried = passport?.carriedGift;
+  if(currentRole!=='visitor' || !carried) return false;
+  const item = CATALOG.items[carried.itemId];
+  const target = `${cell[0]},${cell[1]}`;
+  if(blockedSet().has(target)){
+    toast('DELIVERY TILE BLOCKED');
+    chirp('bad');
+    return true;
+  }
+  const ok = window.confirm(`Place ${item?.name || carried.itemId} for ${carried.forName || 'someone'} here?`);
+  if(!ok) return true;
+  const res = await api('/api/gift/deliver', { itemId:carried.itemId, cell });
+  if(!res?.receipt){
+    giftDebug.lastError = res?.error || 'deliver_failed';
+    const msg = {
+      no_carried_gift:'NO CARRIED GIFT',
+      bad_cell:'BAD DELIVERY TILE',
+      forbidden:'VISITOR ONLY',
+    }[res?.error] || 'DELIVERY FAILED';
+    toast(msg);
+    chirp('bad');
+    return true;
+  }
+  const nextPassport = applyDeliveryToPassport(passport, res.receipt);
+  writeStoredPassport(giftDebug.activePassportKey || passportStorageKey(passport), nextPassport);
+  giftDebug.lastReceipt = res.receipt;
+  giftDebug.lastDuplicate = !!res.duplicate;
+  giftDebug.lastError = '';
+  chirp('ui');
+  toast((res.duplicate ? 'REISSUED' : 'DELIVERED') + ' ' + (item?.name || carried.itemId).toUpperCase());
+  return true;
+}
+async function persistOwnerSave(){
+  const res = await api('/api/save', { save: ownerSave });
+  if(res?.save) applyOwnerSave(res.save);
+}
+function ensureAudio(){
+  if(!audioCtx){
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    if(!Ctx) return null;
+    audioCtx = new Ctx();
+  }
+  if(audioCtx.state==='suspended') audioCtx.resume().catch(()=>{});
+  audioDebug.unlocked = audioCtx.state !== 'closed';
+  return audioCtx;
+}
+function chirp(type='ui'){
+  const ctx = ensureAudio();
+  audioDebug.last = type;
+  audioDebug.count += 1;
+  if(!ctx) return;
+  const now = ctx.currentTime;
+  const spec = {
+    ui:[640,0.03,'triangle',0.018,780],
+    auth:[520,0.08,'sine',0.03,780],
+    start:[410,0.06,'square',0.03,620],
+    reward:[780,0.14,'triangle',0.04,1120],
+    bad:[220,0.05,'sawtooth',0.025,180]
+  }[type] || [640,0.03,'triangle',0.018,780];
+  const [freq,dur,wave,gain,peak] = spec;
+  const osc = ctx.createOscillator();
+  const g = ctx.createGain();
+  osc.type = wave;
+  osc.frequency.setValueAtTime(freq, now);
+  osc.frequency.exponentialRampToValueAtTime(Math.max(peak, 90), now + dur);
+  g.gain.setValueAtTime(0.0001, now);
+  g.gain.exponentialRampToValueAtTime(gain, now + 0.01);
+  g.gain.exponentialRampToValueAtTime(0.0001, now + dur);
+  osc.connect(g).connect(ctx.destination);
+  osc.start(now);
+  osc.stop(now + dur + 0.02);
+}
+function stopMiniGame(){
+  miniGame.running = false;
+  if(miniGame.raf) cancelAnimationFrame(miniGame.raf);
+  miniGame.raf = 0;
+}
+function miniGameBand(err){
+  if(err < 0.025) return { reward:18, name:'perfect', hint:'Dead-center lock. Full credit band.' };
+  if(err < 0.07) return { reward:12, name:'steady', hint:'Good lock. Nearly centered.' };
+  if(err < 0.14) return { reward:7, name:'rough', hint:'Array aligned, but it drifted a little.' };
+  return { reward:4, name:'barely', hint:'Weak alignment, but the array still came online.' };
+}
+function renderMiniGame(){
+  const zone = document.getElementById('gameZone');
+  const marker = document.getElementById('gameMarker');
+  const lock = document.getElementById('btnGameLock');
+  const start = document.getElementById('btnGameStart');
+  const score = document.getElementById('gameScore');
+  if(!zone || !marker) return;
+  zone.style.left = (miniGame.target * 100).toFixed(1) + '%';
+  zone.style.width = (miniGame.width * 100).toFixed(1) + '%';
+  marker.style.left = `calc(${(miniGame.marker * 100).toFixed(1)}% - 5px)`;
+  lock.disabled = !miniGame.running;
+  start.disabled = miniGame.running || performance.now() < miniGame.cooldownUntil;
+  if(score){
+    const cooldown = Math.max(0, miniGame.cooldownUntil - performance.now());
+    score.textContent = cooldown > 0
+      ? `cooldown ${Math.ceil(cooldown/100)/10}s · best +${miniGame.best} · last ${miniGame.lastBand}`
+      : `best +${miniGame.best} · last ${miniGame.lastBand} · reward bands +18 / +12 / +7 / +4`;
+  }
+  if(!miniGame.running && performance.now() < miniGame.cooldownUntil) requestAnimationFrame(renderMiniGame);
+}
+function tickMiniGame(){
+  if(!miniGame.running) return;
+  const elapsed = performance.now() - miniGame.startTs;
+  miniGame.marker = (Math.sin(elapsed * 0.0062) + 1) / 2;
+  renderMiniGame();
+  miniGame.raf = requestAnimationFrame(tickMiniGame);
+}
+function openGame(){
+  if(currentRole!=='owner'){ toast('OWNER ONLY'); return; }
+  gameOpen = true;
+  closeShop();
+  closeBuild();
+  closeWardrobe();
+  document.getElementById('gameModal').classList.add('open');
+  document.getElementById('gameModal').setAttribute('aria-hidden','false');
+  document.getElementById('gameLabel').textContent = 'Ready for a new calibration run';
+  document.getElementById('gameHint').textContent = 'Best hits pay more credits. Rewards are tiny and replayable.';
+  renderMiniGame();
+}
+function closeGame(){
+  gameOpen = false;
+  stopMiniGame();
+  document.getElementById('gameModal').classList.remove('open');
+  document.getElementById('gameModal').setAttribute('aria-hidden','true');
+}
+function startMiniGame(){
+  if(performance.now() < miniGame.cooldownUntil) return;
+  miniGame.target = 0.14 + Math.random() * 0.54;
+  miniGame.width = 0.14;
+  miniGame.marker = 0;
+  miniGame.startTs = performance.now();
+  miniGame.lastReward = 0;
+  miniGame.running = true;
+  miniGame.lastBand = 'live';
+  chirp('start');
+  document.getElementById('gameLabel').textContent = 'Calibrating... lock in on the cyan band';
+  document.getElementById('gameHint').textContent = 'Perfect +18 · steady +12 · rough +7 · barely +4';
+  renderMiniGame();
+  tickMiniGame();
+}
+async function lockMiniGame(){
+  if(!miniGame.running || !ownerSave) return;
+  stopMiniGame();
+  const zoneMid = miniGame.target + miniGame.width/2;
+  const err = Math.abs(miniGame.marker - zoneMid);
+  const result = miniGameBand(err);
+  ownerSave = { ...ownerSave, credits: ownerSave.credits + result.reward };
+  await persistOwnerSave();
+  miniGame.lastReward = result.reward;
+  miniGame.best = Math.max(miniGame.best, result.reward);
+  miniGame.lastBand = result.name;
+  miniGame.cooldownUntil = performance.now() + 900;
+  chirp(result.reward >= 12 ? 'reward' : 'ui');
+  document.getElementById('gameLabel').textContent = `Alignment ${result.name} · +${result.reward} CR`;
+  document.getElementById('gameHint').textContent = result.hint;
+  renderMiniGame();
+  toast('CALIBRATED +' + result.reward + ' CR');
+}
+function openShop(){
+  if(currentRole!=='owner'){ toast('OWNER ONLY'); return; }
+  shopOpen = true;
+  closeBuild();
+  closeGame();
+  closeWardrobe();
+  document.getElementById('shopModal').classList.add('open');
+  document.getElementById('shopModal').setAttribute('aria-hidden','false');
+  renderShop();
+}
+function closeShop(){
+  shopOpen = false;
+  document.getElementById('shopModal').classList.remove('open');
+  document.getElementById('shopModal').setAttribute('aria-hidden','true');
+}
+function resetBuildMode(){
+  buildMode = { itemId:null, rot:0, pickup:false };
+}
+function openBuild(){
+  if(currentRole!=='owner'){ toast('OWNER ONLY'); return; }
+  buildOpen = true;
+  closeShop();
+  closeGame();
+  closeWardrobe();
+  document.getElementById('buildModal').classList.add('open');
+  document.getElementById('buildModal').setAttribute('aria-hidden','false');
+  renderBuild();
+}
+function closeBuild(){
+  buildOpen = false;
+  document.getElementById('buildModal').classList.remove('open');
+  document.getElementById('buildModal').setAttribute('aria-hidden','true');
+}
+function openWardrobe(){
+  if(currentRole!=='owner'){ toast('OWNER ONLY'); return; }
+  wardrobeOpen = true;
+  closeShop();
+  closeBuild();
+  closeGame();
+  document.getElementById('wardrobeModal').classList.add('open');
+  document.getElementById('wardrobeModal').setAttribute('aria-hidden','false');
+  renderWardrobe();
+}
+function closeWardrobe(){
+  wardrobeOpen = false;
+  document.getElementById('wardrobeModal').classList.remove('open');
+  document.getElementById('wardrobeModal').setAttribute('aria-hidden','true');
+}
+function beginPlacement(itemId, rot=0){
+  buildMode = { itemId, rot, pickup:false };
+  closeBuild();
+  toast('TAP A TILE FOR ' + CATALOG.items[itemId].name.toUpperCase());
+}
+function beginPickup(){
+  buildMode = { itemId:null, rot:0, pickup:true };
+  closeBuild();
+  toast('TAP FURNITURE TO PICK IT UP');
+}
+function shopTag(itemId, item){
+  if(item.giftOnly) return 'gift-only';
+  if(item.kind==='clothing') return item.slot + ' slot';
+  return (item.footprint || [1,1]).join('×') + ' footprint';
+}
+function shopSectionSubcopy(kind, carried, credits){
+  if(kind==='furniture') return carried ? `credits ${credits} · gift slot occupied until home reconcile` : `credits ${credits} · gift furniture can now be bought for someone else`;
+  return carried ? `credits ${credits} · clothing still buys to your wardrobe` : `credits ${credits} · clothing still buys to your wardrobe`;
+}
+async function purchaseGift(itemId){
+  const item = CATALOG.items[itemId];
+  if(!item || !ownerSave) return;
+  const forName = (window.prompt(`Gift ${item.name} for who?`, ownerSave.carriedGift?.forName || '') || '').trim();
+  if(!forName){ toast('RECIPIENT REQUIRED'); chirp('bad'); return; }
+  const res = buyGift(ownerSave, CATALOG, itemId, { forName });
+  if(res.error){
+    const msg = {
+      not_gift_only:'NOT A GIFT ITEM',
+      already_carrying:'GIFT SLOT OCCUPIED',
+      insufficient_credits:'NOT ENOUGH CREDITS',
+      unknown_item:'ITEM NOT FOUND'
+    }[res.error] || 'GIFT BUY FAILED';
+    toast(msg); chirp('bad'); return;
+  }
+  ownerSave = normalizeOwnerSave(res.homeSave);
+  await persistOwnerSave();
+  renderShop();
+  chirp('ui');
+  toast(`CARRYING ${item.name.toUpperCase()} FOR ${forName.toUpperCase()}`);
+}
+async function purchaseItem(itemId){
+  const item = CATALOG.items[itemId];
+  if(!item || !ownerSave) return;
+  if(item.giftOnly){ toast('GIFT ONLY'); return; }
+  if(ownerSave.credits < item.price){ toast('NOT ENOUGH CREDITS'); return; }
+
+  ownerSave = { ...ownerSave, credits: ownerSave.credits - item.price };
+  if(item.kind==='furniture') ownerSave.inventory = [...(ownerSave.inventory || []), itemId];
+  if(item.kind==='clothing') ownerSave.wardrobe = [...(ownerSave.wardrobe || []), itemId];
+  await persistOwnerSave();
+  renderShop();
+  chirp('ui');
+  toast('PURCHASED ' + item.name.toUpperCase());
+}
+function renderShop(){
+  const list = document.getElementById('shopList');
+  const credits = ownerSave?.credits ?? 0;
+  const carried = ownerSave?.carriedGift || null;
+  const sections = ['furniture','clothing'];
+  list.innerHTML = (carried ? `<div class="panel"><div class="title" style="font-size:12px">Courier slot</div><div class="sub" style="margin:4px 0 10px">Carrying ${CATALOG.items[carried.itemId]?.name || carried.itemId} for ${carried.forName || 'someone'} · nonce ${carried.giftNonce}</div></div>` : `<div class="panel"><div class="sub">Courier slot empty. Gift-only items can now be bought for someone and carried in your passport.</div></div>`) + sections.map((kind) => {
+    const items = byKind(kind).map(([itemId,item]) => {
+      const disabled = item.giftOnly ? (!!carried || credits < item.price) : (credits < item.price);
+      const label = item.giftOnly
+        ? (carried ? 'Slot occupied' : (credits < item.price ? 'Need more CR' : 'Buy gift'))
+        : (credits < item.price ? 'Need more CR' : 'Buy');
+      return `<div class="shop-item"><div class="shop-meta"><div class="shop-name">${item.name}</div><div class="shop-tags">${shopTag(itemId,item)}</div></div><div class="shop-actions"><div class="shop-price">CR ${item.price}</div><button class="btn" data-buy="${itemId}" ${disabled?'disabled':''}>${label}</button></div></div>`;
+    }).join('');
+    return `<div class="panel"><div class="title" style="font-size:12px">${kind}</div><div class="sub" style="margin:4px 0 10px">${shopSectionSubcopy(kind, carried, credits)}</div><div class="shop-list">${items}</div></div>`;
+  }).join('');
+  for(const btn of list.querySelectorAll('[data-buy]')) btn.onclick = ()=>{
+    const itemId = btn.dataset.buy;
+    const item = CATALOG.items[itemId];
+    return item?.giftOnly ? purchaseGift(itemId) : purchaseItem(itemId);
+  };
+}
+function renderBuild(){
+  const list = document.getElementById('buildList');
+  const rows = inventoryCounts().map(([itemId,count]) => {
+    const item = CATALOG.items[itemId];
+    const fp = (item.footprint || [1,1]).join('×');
+    const rotate = item.footprint && item.footprint[0] !== item.footprint[1];
+    return `<div class="shop-item"><div class="shop-meta"><div class="shop-name">${item.name} <span class="count-badge">×${count}</span></div><div class="shop-tags">${fp} footprint · inventory</div></div><div class="shop-actions"><button class="btn" data-place="${itemId}" data-rot="0">Place</button>${rotate ? `<button class="btn secondary" data-place="${itemId}" data-rot="1">Place ↻</button>` : ''}</div></div>`;
+  }).join('');
+  list.innerHTML = rows || `<div class="panel"><div class="sub">No unplaced furniture yet. Buy furniture in SHOP first.</div></div>`;
+  for(const btn of list.querySelectorAll('[data-place]')) btn.onclick = ()=>beginPlacement(btn.dataset.place, Number(btn.dataset.rot||0));
+}
+function wardrobeCounts(){
+  const counts = new Map();
+  for(const itemId of (ownerSave?.wardrobe || [])) counts.set(itemId, (counts.get(itemId)||0)+1);
+  return [...counts.entries()];
+}
+function currentLook(){
+  return { skin:1, base:'frame_avatar_base', ...(ownerSave?.owner?.look || {}) };
+}
+function baseLookMeta(baseId){
+  return BASE_LOOKS.find(([id]) => id===baseId) || BASE_LOOKS[0];
+}
+async function cycleLook(prop, dir){
+  if(!ownerSave) return;
+  const look = currentLook();
+  let next = look[prop];
+  if(prop==='skin') next = (Number(look.skin || 0) + dir + SKIN_TONES.length) % SKIN_TONES.length;
+  if(prop==='base'){
+    const ids = BASE_LOOKS.map(([id]) => id);
+    const idx = ids.indexOf(look.base || ids[0]);
+    next = ids[(idx + dir + ids.length) % ids.length];
+  }
+  ownerSave = { ...ownerSave, owner:{ ...(ownerSave.owner || {}), look:{ ...look, [prop]:next } } };
+  await persistOwnerSave();
+  renderWardrobe();
+  chirp('ui');
+  toast(prop==='skin' ? 'UPDATED SKIN TONE' : 'UPDATED SUIT TINT');
+}
+async function toggleEquip(itemId){
+  const item = CATALOG.items[itemId];
+  if(!item || item.kind!=='clothing' || !ownerSave) return;
+  const equipped = { ...(ownerSave.equipped || {}) };
+  equipped[item.slot] = equipped[item.slot]===itemId ? null : itemId;
+  ownerSave = { ...ownerSave, equipped };
+  await persistOwnerSave();
+  renderWardrobe();
+  chirp('ui');
+  toast((equipped[item.slot] ? 'EQUIPPED ' : 'CLEARED ') + item.name.toUpperCase());
+}
+function renderWardrobe(){
+  const lookPanel = document.getElementById('lookPanel');
+  const list = document.getElementById('wardrobeList');
+  const look = currentLook();
+  const [,baseName,baseColor] = baseLookMeta(look.base);
+  lookPanel.innerHTML = `<div class="look-row"><div><div class="title" style="font-size:12px">Base avatar</div><div class="sub">Cheap home-side customization carried in your passport</div></div></div><div class="look-row"><div class="shop-meta"><div class="shop-name">Skin tone</div><div class="shop-tags"><span class="look-swatch" style="background:${SKIN_TONES[look.skin]}"></span> tone ${Number(look.skin)+1}</div></div><div class="shop-actions"><button class="btn secondary" data-look="skin:-1">Prev</button><button class="btn secondary" data-look="skin:1">Next</button></div></div><div class="look-row"><div class="shop-meta"><div class="shop-name">Undersuit tint</div><div class="shop-tags"><span class="look-swatch" style="background:${baseColor}"></span> ${baseName}</div></div><div class="shop-actions"><button class="btn secondary" data-look="base:-1">Prev</button><button class="btn secondary" data-look="base:1">Next</button></div></div>`;
+  for(const btn of lookPanel.querySelectorAll('[data-look]')){
+    btn.onclick = ()=>{ const [prop,dir] = btn.dataset.look.split(':'); cycleLook(prop, Number(dir)); };
+  }
+  const rows = wardrobeCounts().map(([itemId,count]) => {
+    const item = CATALOG.items[itemId];
+    const equipped = ownerSave?.equipped?.[item.slot]===itemId;
+    const slotState = equipped ? 'equipped' : (ownerSave?.equipped?.[item.slot] ? 'replace ' + ownerSave.equipped[item.slot].replaceAll('_',' ') : 'empty slot');
+    return `<div class="shop-item"><div class="shop-meta"><div class="shop-name">${item.name} <span class="count-badge">×${count}</span></div><div class="shop-tags">${item.slot} slot · ${slotState}</div></div><div class="shop-actions"><button class="btn ${equipped?'secondary':''}" data-equip="${itemId}">${equipped?'Unequip':'Equip'}</button></div></div>`;
+  }).join('');
+  list.innerHTML = rows || `<div class="panel"><div class="sub">No clothing owned yet. Buy clothing in SHOP first.</div></div>`;
+  for(const btn of list.querySelectorAll('[data-equip]')) btn.onclick = ()=>toggleEquip(btn.dataset.equip);
+}
+async function placeSelectedAt(cell){
+  const itemId = buildMode.itemId;
+  if(!itemId || !ownerSave) return;
+  if(!canPlaceItem(itemId, cell, buildMode.rot)){ toast('CANNOT PLACE THERE'); return; }
+  const idx = (ownerSave.inventory || []).indexOf(itemId);
+  if(idx < 0){ resetBuildMode(); toast('ITEM NOT IN INVENTORY'); return; }
+  ownerSave.inventory = ownerSave.inventory.slice();
+  ownerSave.inventory.splice(idx, 1);
+  ownerSave.room = ownerSave.room || { size:world.room.size, placed:[] };
+  ownerSave.room.placed = [...(ownerSave.room.placed || []), { uid:'p'+Date.now().toString(36)+Math.random().toString(36).slice(2,5), itemId, cell, rot:buildMode.rot }];
+  await persistOwnerSave();
+  resetBuildMode();
+  chirp('ui');
+  toast('PLACED ' + CATALOG.items[itemId].name.toUpperCase());
+}
+async function pickupPlaced(entry){
+  if(!entry || !ownerSave) return;
+  ownerSave.room = ownerSave.room || { size:world.room.size, placed:[] };
+  ownerSave.room.placed = (ownerSave.room.placed || []).filter(it => it.uid !== entry.uid);
+  ownerSave.inventory = [...(ownerSave.inventory || []), entry.itemId];
+  await persistOwnerSave();
+  resetBuildMode();
+  chirp('ui');
+  toast('PICKED UP ' + CATALOG.items[entry.itemId].name.toUpperCase());
+}
+
+// ---- drawing primitives (placeholder vector art; AGENT: replace with spritesheet) ----
+function drawRoomBackdrop(size){
+  const [sx,sy] = size;
+  const top = gridToScreen(0,0);
+  const left = gridToScreen(0,sy-1);
+  const right = gridToScreen(sx-1,0);
+  const floorBottom = gridToScreen(sx-1,sy-1).y + TILE_H;
+
+  const sky = ctx.createLinearGradient(0, top.y - 220, 0, floorBottom + 80);
+  sky.addColorStop(0, 'rgba(255,176,84,.12)');
+  sky.addColorStop(.45, 'rgba(90,56,34,.10)');
+  sky.addColorStop(1, 'rgba(10,8,6,0)');
+  ctx.fillStyle = sky;
+  ctx.fillRect(0, top.y - 240, W, floorBottom - top.y + 320);
+
+  ctx.fillStyle = 'rgba(16,12,10,.85)';
+  ctx.beginPath();
+  ctx.moveTo(top.x, top.y - 110);
+  ctx.lineTo(right.x + TILE_W/2 + 40, right.y + TILE_H/2 - 42);
+  ctx.lineTo(right.x + TILE_W/2 + 40, floorBottom + 10);
+  ctx.lineTo(top.x, top.y + 18);
+  ctx.closePath();
+  ctx.fill();
+
+  ctx.beginPath();
+  ctx.moveTo(top.x, top.y - 110);
+  ctx.lineTo(left.x - TILE_W/2 - 40, left.y + TILE_H/2 - 42);
+  ctx.lineTo(left.x - TILE_W/2 - 40, floorBottom + 10);
+  ctx.lineTo(top.x, top.y + 18);
+  ctx.closePath();
+  ctx.fill();
+
+  ctx.strokeStyle = 'rgba(255,176,84,.12)';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.arc(top.x, top.y - 54, 58, Math.PI * 1.1, Math.PI * 1.9);
+  ctx.stroke();
+  ctx.strokeRect(top.x - 58, top.y - 92, 116, 76);
+}
+function drawRoomShell(size){
+  const [sx,sy] = size;
+  const top = gridToScreen(0,0);
+  const left = gridToScreen(0,sy-1);
+  const right = gridToScreen(sx-1,0);
+  const wallDrop = TILE_H * 2.7;
+
+  ctx.fillStyle = 'rgba(58,42,34,.96)';
+  ctx.beginPath();
+  ctx.moveTo(top.x, top.y);
+  ctx.lineTo(right.x + TILE_W/2, right.y + TILE_H/2);
+  ctx.lineTo(right.x + TILE_W/2, right.y + TILE_H/2 - wallDrop);
+  ctx.lineTo(top.x, top.y - wallDrop);
+  ctx.closePath();
+  ctx.fill();
+
+  ctx.fillStyle = 'rgba(42,30,24,.98)';
+  ctx.beginPath();
+  ctx.moveTo(top.x, top.y);
+  ctx.lineTo(left.x - TILE_W/2, left.y + TILE_H/2);
+  ctx.lineTo(left.x - TILE_W/2, left.y + TILE_H/2 - wallDrop);
+  ctx.lineTo(top.x, top.y - wallDrop);
+  ctx.closePath();
+  ctx.fill();
+
+  ctx.strokeStyle = 'rgba(255,176,84,.15)';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(top.x, top.y - wallDrop);
+  ctx.lineTo(right.x + TILE_W/2, right.y + TILE_H/2 - wallDrop);
+  ctx.moveTo(top.x, top.y - wallDrop);
+  ctx.lineTo(left.x - TILE_W/2, left.y + TILE_H/2 - wallDrop);
+  ctx.stroke();
+}
+function drawTileDiamond(x,y,fill,stroke='rgba(255,176,84,.06)'){
+  ctx.beginPath();
+  ctx.moveTo(x, y); ctx.lineTo(x+TILE_W/2, y+TILE_H/2);
+  ctx.lineTo(x, y+TILE_H); ctx.lineTo(x-TILE_W/2, y+TILE_H/2); ctx.closePath();
+  ctx.fillStyle = fill; ctx.fill();
+  ctx.strokeStyle = stroke; ctx.stroke();
+}
+function drawTile(gx,gy){
+  const {x,y} = gridToScreen(gx,gy);
+  const tone = (gx+gy)%2 ? '#3a2a22' : '#42302666';
+  drawTileDiamond(x, y, tone);
+}
+function drawCube(gx,gy,color,label,rot=0,itemId=null){
+  if(itemId){
+    const item = CATALOG.items[itemId];
+    for(const [cx,cy] of cellsForPlacement(item, [gx,gy], rot)){
+      const p = gridToScreen(cx,cy);
+      drawTileDiamond(p.x, p.y, shade(color,-8), 'rgba(255,176,84,.12)');
+    }
+  }
+  const {x,y} = gridToScreen(gx,gy); const h = Math.max(18, Math.round(TILE_H * 1.6));
+  // top
+  ctx.beginPath(); ctx.moveTo(x,y-h); ctx.lineTo(x+TILE_W/2,y-h+TILE_H/2);
+  ctx.lineTo(x,y-h+TILE_H); ctx.lineTo(x-TILE_W/2,y-h+TILE_H/2); ctx.closePath();
+  ctx.fillStyle = color; ctx.fill();
+  // left/right faces
+  ctx.fillStyle = shade(color,-22); ctx.beginPath();
+  ctx.moveTo(x-TILE_W/2,y-h+TILE_H/2); ctx.lineTo(x,y-h+TILE_H); ctx.lineTo(x,y+TILE_H); ctx.lineTo(x-TILE_W/2,y+TILE_H/2); ctx.closePath(); ctx.fill();
+  ctx.fillStyle = shade(color,-38); ctx.beginPath();
+  ctx.moveTo(x+TILE_W/2,y-h+TILE_H/2); ctx.lineTo(x,y-h+TILE_H); ctx.lineTo(x,y+TILE_H); ctx.lineTo(x+TILE_W/2,y+TILE_H/2); ctx.closePath(); ctx.fill();
+  if(label){ ctx.fillStyle='rgba(0,0,0,.5)'; ctx.font='9px ui-monospace'; ctx.textAlign='center'; ctx.fillText(label,x,y-h+TILE_H/2+3); }
+}
+function avatarSkin(look={}){
+  return SKIN_TONES[look.skin || 0] || SKIN_TONES[1];
+}
+function baseSuitColor(look={}){
+  return baseLookMeta(look.base || 'frame_avatar_base')[2];
+}
+function clothingColor(itemId, fallback){
+  return CATALOG.items[itemId]?.color || fallback;
+}
+function drawAvatar(px,py,facing,tint,name,look={},equipped={},moving=false){
+  const scale = TILE_W / BASE_TILE_W;
+  const skin = avatarSkin(look);
+  const baseTint = baseSuitColor(look) || tint;
+  const bounce = moving ? Math.sin(performance.now()*0.02) * 1.6 : 0;
+  ctx.save(); ctx.translate(px,py-bounce); ctx.scale(scale, scale);
+  ctx.fillStyle='rgba(0,0,0,.35)'; ctx.beginPath(); ctx.ellipse(0,0,12,6,0,0,7); ctx.fill();
+  ctx.fillStyle = equipped.body ? clothingColor(equipped.body, baseTint) : baseTint;
+  roundRect(-8,-34,16,28,6); ctx.fill();
+  ctx.fillStyle=shade(ctx.fillStyle, equipped.body ? -18 : 12); ctx.fillRect(-7,-20,14,3);
+  ctx.fillStyle=skin; ctx.beginPath(); ctx.arc(0,-38,7,0,7); ctx.fill();
+  if(equipped.head){
+    ctx.fillStyle=clothingColor(equipped.head, '#b9c3d0');
+    ctx.beginPath(); ctx.arc(0,-40,9,Math.PI,0); ctx.fill();
+    ctx.fillRect(-8,-40,16,5);
+    ctx.fillStyle='rgba(12,22,28,.55)'; ctx.fillRect(-5,-39,10,3);
+  }
+  if(equipped.patch){
+    ctx.fillStyle=clothingColor(equipped.patch, '#d96e3a');
+    ctx.fillRect(3,-26,5,5);
+  }
+  ctx.fillStyle=facing? 'rgba(95,210,214,.9)':'rgba(255,176,84,.9)';
+  ctx.beginPath(); ctx.arc(facing?4:-4,-38,2,0,7); ctx.fill();
+  if(name){ ctx.fillStyle='#f2e4d4'; ctx.font='10px ui-monospace';
+    ctx.textAlign='center'; ctx.fillText(name,0,-48); }
+  ctx.restore();
+}
+function roundRect(x,y,w,h,r){ ctx.beginPath(); ctx.moveTo(x+r,y);
+  ctx.arcTo(x+w,y,x+w,y+h,r); ctx.arcTo(x+w,y+h,x,y+h,r);
+  ctx.arcTo(x,y+h,x,y,r); ctx.arcTo(x,y,x+w,y,r); ctx.closePath(); }
+function shade(hex,amt){ const n=parseInt(hex.slice(1,7),16);
+  let r=(n>>16)+amt,g=((n>>8)&255)+amt,b=(n&255)+amt;
+  r=Math.max(0,Math.min(255,r));g=Math.max(0,Math.min(255,g));b=Math.max(0,Math.min(255,b));
+  return '#'+((1<<24)+(r<<16)+(g<<8)+b).toString(16).slice(1); }
+
+function drawPathPreview(){
+  if(me.targetCell){
+    const {x,y} = gridToScreen(me.targetCell.x, me.targetCell.y);
+    ctx.strokeStyle = 'rgba(95,210,214,.9)';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(x, y+3); ctx.lineTo(x+TILE_W/2-4, y+TILE_H/2);
+    ctx.lineTo(x, y+TILE_H-3); ctx.lineTo(x-TILE_W/2+4, y+TILE_H/2); ctx.closePath();
+    ctx.stroke();
+  }
+  if(!me.path.length) return;
+  ctx.fillStyle = 'rgba(95,210,214,.7)';
+  for(const step of me.path){
+    const p = gridToScreen(step.x, step.y);
+    ctx.beginPath();
+    ctx.arc(p.x, p.y + TILE_H/2, Math.max(2, TILE_W*0.05), 0, Math.PI*2);
+    ctx.fill();
+  }
+}
+function drawBuildPreview(){
+  if(buildMode.itemId){
+    const item = CATALOG.items[buildMode.itemId];
+    const hover = hoverCell || [me.cell.x, me.cell.y];
+    const ok = canPlaceItem(buildMode.itemId, hover, buildMode.rot);
+    const fill = ok ? 'rgba(95,210,214,.26)' : 'rgba(217,83,63,.28)';
+    const stroke = ok ? 'rgba(95,210,214,.85)' : 'rgba(255,120,92,.85)';
+    for(const [cx,cy] of cellsForPlacement(item, hover, buildMode.rot)){
+      const p = gridToScreen(cx,cy);
+      drawTileDiamond(p.x, p.y, fill, stroke);
+    }
+  } else if(buildMode.pickup){
+    const focus = hoverCell || [me.cell.x, me.cell.y];
+    const entry = findPlacedAt(focus);
+    if(!entry) return;
+    for(const [cx,cy] of placedCells(entry)){
+      const p = gridToScreen(cx,cy);
+      drawTileDiamond(p.x, p.y, 'rgba(255,120,92,.18)', 'rgba(255,120,92,.8)');
+    }
+  }
+}
+function drawGiftPlaced(g){
+  const item = CATALOG.items[g.itemId];
+  drawCube(g.cell[0], g.cell[1], item?.color || '#3f7d4f', '♥');
+  const p = gridToScreen(g.cell[0], g.cell[1]);
+  const label = g.fromName ? `from ${g.fromName}` : 'gift';
+  ctx.fillStyle = 'rgba(8,6,5,.78)';
+  roundRect(p.x - 30, p.y + TILE_H + 2, 60, 14, 5);
+  ctx.fill();
+  ctx.fillStyle = '#f2e4d4';
+  ctx.font = '9px ui-monospace';
+  ctx.textAlign = 'center';
+  ctx.fillText(label, p.x, p.y + TILE_H + 12);
+}
+
+// ---- render: painter's algorithm by depth = gx+gy ----
+function render(){
+  ctx.clearRect(0,0,W,H);
+  const [sx,sy] = world.room.size;
+  drawRoomBackdrop(world.room.size);
+  drawRoomShell(world.room.size);
+  for(let d=0; d<=sx+sy; d++)                         // floor first, back-to-front
+    for(let gx=0; gx<sx; gx++){ const gy=d-gx; if(gy>=0&&gy<sy) drawTile(gx,gy); }
+  drawPathPreview();
+  drawBuildPreview();
+
+  // collect entities (furniture + players + gifts) and depth-sort
+  const ents = [];
+  for(const it of world.room.layout){ const c=CATALOG.items[it.itemId];
+    ents.push({ depth:it.cell[0]+it.cell[1], z:0, draw:()=>drawCube(it.cell[0],it.cell[1], c?c.color:'#777', c?c.name[0]:'?', it.rot||0, it.itemId) }); }
+  for(const g of world.gifts)
+    ents.push({ depth:g.cell[0]+g.cell[1], z:1, draw:()=>drawGiftPlaced(g) });
+  // me
+  ents.push({ depth:me.py, z:1, draw:()=>drawAvatar(me.px,me.py,me.facing,'#d98b3f', 'you', (currentRole==='owner' ? (ownerSave?.owner?.look || me.look || {skin:1,base:'frame_avatar_base'}) : (me.look || {skin:1,base:'frame_avatar_base'})), (currentRole==='owner' ? (ownerSave?.equipped || me.equipped || {}) : (me.equipped || {})), !!me.path.length) });
+  // others
+  for(const [,o] of others){ ents.push({ depth:o.py, z:1,
+    draw:()=>drawAvatar(o.px,o.py,o.facing,'#6f8fb5', o.name, o.look || {}, o.equipped || {}, performance.now() < (o.movingUntil||0)) }); }
+
+  ents.sort((a,b)=> (a.depth-b.depth) || (a.z-b.z));
+  for(const e of ents) e.draw();
+}
+
+// ---- movement integration ----
+let lastT = 0;
+function faceToward(from, to){
+  const dx = to.x - from.x, dy = to.y - from.y;
+  return (dx + dy) >= 0 ? 1 : 0;
+}
+function tick(t){
+  const dt = Math.min(0.05, (t-lastT)/1000 || 0); lastT = t;
+
+  // advance me along path
+  const target = me.path[0];
+  const tp = target ? gridToScreen(target.x, target.y) : gridToScreen(me.cell.x, me.cell.y);
+  const goalX = tp.x, goalY = tp.y + TILE_H/2;     // stand at tile center-ish
+  const dx = goalX-me.px, dy = goalY-me.py, dist = Math.hypot(dx,dy);
+  const stepPx = me.speed * (TILE_W/2) * dt;        // cells/sec → px/sec (approx)
+  if(target) me.facing = faceToward(me.cell, target);
+  if(dist > 0.5){
+    const eased = Math.min(stepPx, Math.max(dist * 0.28, stepPx * 0.72));
+    me.px += dx/dist*Math.min(eased,dist); me.py += dy/dist*Math.min(eased,dist);
+  } else if(target){
+    me.px = goalX; me.py = goalY;
+    me.cell = { x:target.x, y:target.y }; me.path.shift();
+    if(!me.path.length) me.targetCell = null;
+    api('/api/move', { cell:me.cell, facing:me.facing });   // sparse server update
+  }
+
+  // interpolate others toward their reported cell
+  for(const [,o] of others){
+    const p = gridToScreen(o.cell.x,o.cell.y);
+    o.tx = p.x; o.ty = p.y+TILE_H/2;
+    const dx = o.tx-o.px, dy = o.ty-o.py;
+    const dist = Math.hypot(dx,dy);
+    const step = Math.max(18, TILE_W*3.4) * dt;
+    if(dist > 0.35){
+      const eased = Math.min(dist, Math.max(step, dist*0.32));
+      o.px += dx/dist * eased;
+      o.py += dy/dist * eased;
+    } else {
+      o.px = o.tx; o.py = o.ty;
+    }
+  }
+
+  render();
+  requestAnimationFrame(tick);
+}
+
+// ---- input: tap a tile to walk ----
+function eventToCell(e){
+  const r = canvas.getBoundingClientRect();
+  const g = screenToGrid(e.clientX-r.left, e.clientY-r.top);
+  const [sx,sy] = world.room.size;
+  return (g.x<0||g.y<0||g.x>=sx||g.y>=sy) ? null : [g.x,g.y];
+}
+canvas.addEventListener('pointermove', (e)=>{
+  const cell = eventToCell(e);
+  hoverCell = cell;
+});
+canvas.addEventListener('pointerleave', ()=>{ hoverCell = null; });
+canvas.addEventListener('pointerdown', async (e)=>{
+  const cell = eventToCell(e);
+  if(!cell) return;
+  if(buildMode.itemId){
+    await placeSelectedAt(cell);
+    return;
+  }
+  if(buildMode.pickup){
+    const entry = findPlacedAt(cell);
+    if(entry) await pickupPlaced(entry);
+    else toast('NOTHING TO PICK UP');
+    return;
+  }
+  if(await deliverCarriedGiftAt(cell)) return;
+  const blocked = blockedSet();
+  const anchor = me.path[0] || me.cell;
+  const g = { x:cell[0], y:cell[1] };
+  const path = bfs(anchor, g, world.room.size, blocked);
+  if(path && path.length>1){
+    me.targetCell = { x:g.x, y:g.y };
+    me.path = (anchor.x===me.cell.x && anchor.y===me.cell.y) ? path.slice(1) : [anchor, ...path.slice(1)];
+  } else if(g.x!==me.cell.x || g.y!==me.cell.y){
+    toast('PATH BLOCKED');
+  }
+});
+
+// ---- HUD ----
+function toast(msg){ const t=document.getElementById('toast'); t.textContent=msg;
+  t.classList.add('show'); clearTimeout(t._h); t._h=setTimeout(()=>t.classList.remove('show'),1600); }
+document.getElementById('btnGame').onclick = ()=>openGame();
+document.getElementById('btnShop').onclick = ()=>openShop();
+document.getElementById('btnBuild').onclick = ()=>openBuild();
+document.getElementById('btnWardrobe').onclick = ()=>openWardrobe();
+document.getElementById('btnCloseGame').onclick = ()=>closeGame();
+document.getElementById('btnCloseShop').onclick = ()=>closeShop();
+document.getElementById('btnCloseBuild').onclick = ()=>closeBuild();
+document.getElementById('btnCloseWardrobe').onclick = ()=>closeWardrobe();
+document.getElementById('btnBuildPickup').onclick = ()=>beginPickup();
+document.getElementById('btnGameStart').onclick = ()=>startMiniGame();
+document.getElementById('btnGameLock').onclick = ()=>lockMiniGame();
+document.getElementById('btnOwnerLogin').onclick = async ()=>{
+  setAuthNote('');
+  const btn = document.getElementById('btnOwnerLogin');
+  btn.disabled = true;
+  try { await enterOwner(document.getElementById('pinInput').value.trim()); }
+  finally { btn.disabled = false; }
+};
+document.getElementById('btnGuestLogin').onclick = async ()=>{
+  setAuthNote('');
+  const btn = document.getElementById('btnGuestLogin');
+  btn.disabled = true;
+  try { await enterGuest(); }
+  finally { btn.disabled = false; }
+};
+document.getElementById('pinInput').addEventListener('keydown', (e)=>{
+  if(e.key==='Enter') document.getElementById('btnOwnerLogin').click();
+});
+document.getElementById('gameModal').addEventListener('pointerdown', (e)=>{
+  if(e.target.id==='gameModal') closeGame();
+});
+document.getElementById('shopModal').addEventListener('pointerdown', (e)=>{
+  if(e.target.id==='shopModal') closeShop();
+});
+document.getElementById('buildModal').addEventListener('pointerdown', (e)=>{
+  if(e.target.id==='buildModal') closeBuild();
+});
+document.getElementById('wardrobeModal').addEventListener('pointerdown', (e)=>{
+  if(e.target.id==='wardrobeModal') closeWardrobe();
+});
+
+// ---- polling loop (the multiplayer heartbeat; ~4 Hz) ----
+async function poll(){
+  const started = performance.now();
+  try{
+    const st = await api('/api/state');
+    liveState.connected = true;
+    liveState.pollMs = performance.now() - started;
+    if(st && st.room){
+      world.room.layout = st.room.layout || ownerSave?.room?.placed || [];
+      world.room.size   = st.room.size || ownerSave?.room?.size || world.room.size;
+      world.gifts       = st.gifts || [];
+      world.you         = st.you || world.you;
+      if(st.you?.role && st.you.role!==currentRole) setRole(st.you.role);
+      liveState.roomCount = Math.min(4, (st.players||[]).length || 0);
+      syncCredits();
+      document.getElementById('habName').textContent = (st.room.meta?.ownerName || 'Crew') + "'s Hab";
+      if(shopOpen) renderShop();
+      if(buildOpen) renderBuild();
+      // sync other players (exclude me)
+      const seen = new Set(others.keys());
+      const currentIds = new Set();
+      for(const p of (st.players||[])){
+        if(p.playerId==='you') continue;
+        currentIds.add(p.playerId);
+        let o = others.get(p.playerId);
+        if(!o){ const s=gridToScreen(p.cell.x,p.cell.y); o={ ...p, px:s.x, py:s.y+TILE_H/2, tx:s.x, ty:s.y+TILE_H/2, movingUntil:0 }; others.set(p.playerId,o); }
+        else {
+          if((p.cell?.x !== o.cell?.x) || (p.cell?.y !== o.cell?.y)){
+            o.facing = faceToward(o.cell, p.cell);
+            o.movingUntil = performance.now() + 380;
+          }
+          o.cell=p.cell; o.facing=p.facing ?? o.facing; o.name=p.name; o.look=p.look; o.equipped=p.equipped;
+        }
+      }
+      for(const id of [...others.keys()]) if(!currentIds.has(id)) others.delete(id);
+      announcePresence(seen, currentIds);
+      renderPresence();
+    }
+  }catch(err){
+    liveState.connected = false;
+    liveState.pollMs = 0;
+    if(liveState.lastToast!=='link-lost'){
+      liveState.lastToast = 'link-lost';
+      toast('LINK LOST');
+    }
+    renderPresence();
+  }
+  if(liveState.connected) liveState.lastToast = '';
+  setTimeout(poll, 250);
+}
+
+// ---- boot ----
+async function boot(){
+  setOwnerControls(false);
+  renderPresence();
+  renderStatusHint();
+  const hello = await api('/api/hello');
+  document.getElementById('habSub').textContent = 'module · ' + (hello.habId || HAB_ID);
+  document.getElementById('authHabLine').textContent = (hello.ownerName || 'Crew') + "'s Hab · " + (hello.habId || HAB_ID);
+  resize();
+  const s = gridToScreen(me.cell.x, me.cell.y); me.px=s.x; me.py=s.y+TILE_H/2;
+  if(!booted){
+    booted = true;
+    poll();
+    requestAnimationFrame(tick);
+  }
+  openAuth();
+}
+boot();
+</script>
+</body>
+</html>
