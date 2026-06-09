@@ -251,9 +251,11 @@ import { buyGift, deliverGift, applyDeliveryToPassport, reconcile, mintPassport,
   from './gift.mjs';   // AGENT: wire these in for the gift UI (Milestone 6). Loaded now so it's ready.
 
 // ============================================================================
-// CONFIG
+// CONFIG + MOCK
 // ============================================================================
 const USE_MOCK = true;   // AGENT: flip to false to talk to a real Pico over fetch().
+window._SIMULATE_VISITOR = false; // Set to true to spawn a mock ghost walking around
+
 const HAB_ID   = 'hab_demo';
 
 // AGENT: this catalog is the SHARED, baked-in item table (see docs/DATA_SCHEMAS.md).
@@ -338,7 +340,7 @@ const MockServer = (() => {
   let save = load();
   let ledger = loadLedger();
   let visitorPassport = null;
-  window.__mockGhost = window.__mockGhost || { hidden:false };
+  window.__mockGhost = window.__mockGhost || { hidden:!window._SIMULATE_VISITOR };
   // a wandering "ghost" visitor so multiplayer rendering is testable with no hardware
   const ghost = { playerId:'ghost', name:'Ghost', look:{skin:3}, equipped:{}, cell:{x:1,y:6}, facing:1, _t:0 };
   function stepGhost(){
@@ -952,6 +954,7 @@ function chirp(type='ui'){
   osc.start(now);
   osc.stop(now + dur + 0.02);
 }
+let miniGame = { running:false, raf:null, target:0.14, width:0.14, marker:0, startTs:0, lastReward:0, best:0, lastBand:'idle', cooldownUntil:0 };
 function stopMiniGame(){
   miniGame.running = false;
   if(miniGame.raf) cancelAnimationFrame(miniGame.raf);
@@ -999,7 +1002,6 @@ function openGame(){
   document.getElementById('gameModal').classList.add('open');
   document.getElementById('gameModal').setAttribute('aria-hidden','false');
   document.getElementById('gameLabel').textContent = 'Ready for a new calibration run';
-  document.getElementById('gameHint').textContent = 'Best hits pay more credits. Rewards are tiny and replayable.';
   renderMiniGame();
 }
 function closeGame(){
@@ -1053,8 +1055,11 @@ function openShop(){
 }
 function closeShop(){
   shopOpen = false;
-  document.getElementById('shopModal').classList.remove('open');
-  document.getElementById('shopModal').setAttribute('aria-hidden','true');
+  const modal = document.getElementById('shopModal');
+  if(modal){
+    modal.classList.remove('open');
+    modal.setAttribute('aria-hidden','true');
+  }
 }
 function resetBuildMode(){
   buildMode = { itemId:null, rot:0, pickup:false };
@@ -1071,8 +1076,11 @@ function openBuild(){
 }
 function closeBuild(){
   buildOpen = false;
-  document.getElementById('buildModal').classList.remove('open');
-  document.getElementById('buildModal').setAttribute('aria-hidden','true');
+  const modal = document.getElementById('buildModal');
+  if(modal){
+    modal.classList.remove('open');
+    modal.setAttribute('aria-hidden','true');
+  }
 }
 function openWardrobe(){
   if(currentRole!=='owner'){ toast('OWNER ONLY'); return; }
@@ -1086,8 +1094,11 @@ function openWardrobe(){
 }
 function closeWardrobe(){
   wardrobeOpen = false;
-  document.getElementById('wardrobeModal').classList.remove('open');
-  document.getElementById('wardrobeModal').setAttribute('aria-hidden','true');
+  const modal = document.getElementById('wardrobeModal');
+  if(modal){
+    modal.classList.remove('open');
+    modal.setAttribute('aria-hidden','true');
+  }
 }
 function beginPlacement(itemId, rot=0){
   buildMode = { itemId, rot, pickup:false };
