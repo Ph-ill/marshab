@@ -133,6 +133,38 @@
       </div>
       <div class="form-stack">
         <div class="sub">Owner login pulls the same hab save from any device. Guests can walk the room but cannot edit the hab.</div>
+        <div class="look-panel" id="guestSetupPanel">
+          <div class="look-row">
+            <div>
+              <div class="title" style="font-size:12px">Guest shell</div>
+              <div class="sub" id="guestSetupHint">Throwaway passport for visitors without a home hab</div>
+            </div>
+          </div>
+          <label>
+            <div class="field-label">Guest callsign</div>
+            <input class="field-input" id="guestNameInput" maxlength="18" placeholder="Guest-ACE">
+          </label>
+          <div class="look-row">
+            <div class="shop-meta">
+              <div class="shop-name">Suit tint</div>
+              <div class="shop-tags" id="guestBaseLabel"></div>
+            </div>
+            <div class="shop-actions">
+              <button class="btn secondary" id="btnGuestBasePrev">Prev</button>
+              <button class="btn secondary" id="btnGuestBaseNext">Next</button>
+            </div>
+          </div>
+          <div class="look-row">
+            <div class="shop-meta">
+              <div class="shop-name">Skin tone</div>
+              <div class="shop-tags" id="guestSkinLabel"></div>
+            </div>
+            <div class="shop-actions">
+              <button class="btn secondary" id="btnGuestSkinPrev">Prev</button>
+              <button class="btn secondary" id="btnGuestSkinNext">Next</button>
+            </div>
+          </div>
+        </div>
         <label>
           <div class="field-label">Owner PIN</div>
           <input class="field-input" id="pinInput" inputmode="numeric" maxlength="8" placeholder="0000">
@@ -394,23 +426,37 @@ function authRole(){
 function guestPassportKey(){
   return 'marshab.guestPassport';
 }
+function guestSeedName(nonce){
+  return 'Guest-' + nonce.slice(0,3).toUpperCase();
+}
+function normalizeGuestPassport(passport={}){
+  const nonce = String(passport.passportId || makeNonce('guest')).replace(/^guest_/, '').slice(0,8) || makeNonce('guest').slice(-6);
+  const skin = Math.max(0, Math.min(SKIN_TONES.length-1, Number(passport?.look?.skin ?? 2) || 0));
+  const base = BASE_LOOKS.some(([id])=>id===passport?.look?.base) ? passport.look.base : 'frame_avatar_base';
+  const rawName = String(passport?.name || guestSeedName(nonce)).trim().replace(/\s+/g, ' ').slice(0,18);
+  return {
+    v:1,
+    passportId:passport?.passportId || ('guest_' + nonce),
+    name:rawName || guestSeedName(nonce),
+    look:{ skin, base },
+    equipped:{ ...(passport?.equipped || {}) },
+    carriedGift:passport?.carriedGift || null,
+    pendingReceipts:[...(passport?.pendingReceipts || [])],
+    issuedBy:passport?.issuedBy || 'guest_local',
+    issuedTs:passport?.issuedTs || Date.now()
+  };
+}
 function guestPassport(){
   const key = guestPassportKey();
   try {
     const cached = JSON.parse(localStorage.getItem(key));
-    if(cached?.passportId) return cached;
+    if(cached?.passportId){
+      const normalized = normalizeGuestPassport(cached);
+      localStorage.setItem(key, JSON.stringify(normalized));
+      return normalized;
+    }
   } catch{}
-  const nonce = Math.random().toString(36).slice(2,8);
-  const passport = {
-    v:1,
-    passportId:'guest_' + nonce,
-    name:'Guest-' + nonce.slice(0,3).toUpperCase(),
-    look:{ skin:2, base:'frame_avatar_base' },
-    equipped:{},
-    carriedGift:null,
-    issuedBy:'guest_local',
-    issuedTs:Date.now()
-  };
+  const passport = normalizeGuestPassport({ passportId:'guest_' + Math.random().toString(36).slice(2,8) });
   localStorage.setItem(key, JSON.stringify(passport));
   return passport;
 }
@@ -496,9 +542,43 @@ function setOwnerControls(enabled){
 function setAuthNote(msg=''){
   document.getElementById('authNote').textContent = msg;
 }
+function updateGuestPassport(mutator){
+  const key = guestPassportKey();
+  const next = normalizeGuestPassport(mutator(guestPassport()) || guestPassport());
+  localStorage.setItem(key, JSON.stringify(next));
+  renderGuestSetup();
+  renderStatusHint();
+  return next;
+}
+function renderGuestSetup(){
+  const passport = guestPassport();
+  const ownerPassport = readOwnerPassport();
+  const lockedToOwner = !!ownerPassport?.passportId;
+  const panel = document.getElementById('guestSetupPanel');
+  const nameInput = document.getElementById('guestNameInput');
+  const hint = document.getElementById('guestSetupHint');
+  const baseLabel = document.getElementById('guestBaseLabel');
+  const skinLabel = document.getElementById('guestSkinLabel');
+  const [,baseName,baseColor] = baseLookMeta(passport.look?.base || 'frame_avatar_base');
+  if(panel) panel.style.opacity = lockedToOwner ? '0.72' : '1';
+  if(nameInput){
+    nameInput.value = passport.name || '';
+    nameInput.disabled = lockedToOwner;
+  }
+  if(hint) hint.textContent = lockedToOwner
+    ? 'Home passport detected · visitor entry will carry your owner identity'
+    : 'Throwaway passport for visitors without a home hab';
+  if(baseLabel) baseLabel.innerHTML = `<span class="look-swatch" style="background:${baseColor}"></span> ${baseName}`;
+  if(skinLabel) skinLabel.innerHTML = `<span class="look-swatch" style="background:${SKIN_TONES[passport.look?.skin || 0]}"></span> tone ${Number(passport.look?.skin || 0)+1}`;
+  for(const id of ['btnGuestBasePrev','btnGuestBaseNext','btnGuestSkinPrev','btnGuestSkinNext']){
+    const btn = document.getElementById(id);
+    if(btn) btn.disabled = lockedToOwner;
+  }
+}
 function openAuth(){
   document.getElementById('authModal').classList.add('open');
   document.getElementById('authModal').setAttribute('aria-hidden','false');
+  renderGuestSetup();
   document.getElementById('pinInput').focus();
 }
 function closeAuth(){
@@ -725,6 +805,13 @@ async function enterOwner(pin){
   return true;
 }
 async function enterGuest(){
+  if(!readOwnerPassport()?.passportId){
+    const typedName = document.getElementById('guestNameInput')?.value || '';
+    updateGuestPassport(passport=>({
+      ...passport,
+      name: typedName.trim().replace(/\s+/g, ' ').slice(0,18) || passport.name
+    }));
+  }
   const passport = passportForTravel();
   giftDebug.activePassportKey = passportStorageKey(passport);
   const res = await api('/api/passport', { passport });
@@ -1458,6 +1545,29 @@ document.getElementById('btnGuestLogin').onclick = async ()=>{
   try { await enterGuest(); }
   finally { btn.disabled = false; }
 };
+document.getElementById('btnGuestBasePrev').onclick = ()=>updateGuestPassport(passport=>{
+  const idx = BASE_LOOKS.findIndex(([id])=>id===passport.look?.base);
+  return { ...passport, look:{ ...(passport.look||{}), base:BASE_LOOKS[(idx<=0 ? BASE_LOOKS.length : idx)-1][0] } };
+});
+document.getElementById('btnGuestBaseNext').onclick = ()=>updateGuestPassport(passport=>{
+  const idx = BASE_LOOKS.findIndex(([id])=>id===passport.look?.base);
+  return { ...passport, look:{ ...(passport.look||{}), base:BASE_LOOKS[(idx+1)%BASE_LOOKS.length][0] } };
+});
+document.getElementById('btnGuestSkinPrev').onclick = ()=>updateGuestPassport(passport=>{
+  const skin = Number(passport.look?.skin || 0);
+  return { ...passport, look:{ ...(passport.look||{}), skin:(skin<=0 ? SKIN_TONES.length : skin)-1 } };
+});
+document.getElementById('btnGuestSkinNext').onclick = ()=>updateGuestPassport(passport=>{
+  const skin = Number(passport.look?.skin || 0);
+  return { ...passport, look:{ ...(passport.look||{}), skin:(skin+1)%SKIN_TONES.length } };
+});
+document.getElementById('guestNameInput').addEventListener('change', ()=>updateGuestPassport(passport=>({
+  ...passport,
+  name: document.getElementById('guestNameInput').value.trim().replace(/\s+/g, ' ').slice(0,18) || passport.name
+})));
+document.getElementById('guestNameInput').addEventListener('keydown', (e)=>{
+  if(e.key==='Enter') document.getElementById('btnGuestLogin').click();
+});
 document.getElementById('pinInput').addEventListener('keydown', (e)=>{
   if(e.key==='Enter') document.getElementById('btnOwnerLogin').click();
 });
